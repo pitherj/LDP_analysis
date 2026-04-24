@@ -1,0 +1,272 @@
+---
+title: "Analysis script for LDP outputs study"
+author: "Jason Pither, with help from Claude (Sonnet 4.6)"
+date: "`r Sys.Date()`"
+format:
+  html:
+    toc: true
+    toc-location: left
+    toc-depth: 3
+    code-fold: true
+    code-tools: true
+    theme: cosmo
+    embed-resources: true
+    df-print: paged
+execute:
+  cache: true
+  warning: false
+  message: false
+---
+
+```{r libraries}
+library(here)
+library(readr)
+library(dplyr)
+library(tidyr)
+library(purrr)
+library(irr)
+library(effectsize)
+library(ggplot2)
+```
+
+
+# Background
+
+This script follows the analysis plans described in the [pre-registration](https://osf.io/uyqt4/files/xjmyg) for this project.  
+
+The main steps are: 
+
+1. importing the rater evaluation data
+2. reformatting the rater data for analyses
+3. conducting an assessment of inter-rater reliability using two complementary measures: 
+  - Intraclass Correlation Coefficient (ICC). 
+  - Krippendorff's alpha (ordinal) 
+These are reported descriptively. If ICC (average measures) < 0.60, this will be flagged as a limitation and a sensitivity analysis using per-rater scores will be added.
+4. primary analysis:
+  - calculate the average scores for each output
+  - calculate the paired differences between LDP and matched outputs
+  - conduct a permutation test on the differences
+  - report also the results of a paired t-test, with Cohen's D
+
+# Import and format rater data
+
+Import key lookup table
+
+```{r}
+#| label: load-key
+#| echo: false
+#| message: false
+
+pairs_lookup <- readr::read_csv(
+  here::here("data", "data_raw", "data_private", "rater_key_final_v2.csv"),
+  show_col_types = FALSE
+) |>
+  dplyr::select(pub_id, pair_id, group)
+
+readr::write_csv(
+  pairs_lookup,
+  here::here("data", "data_processed", "pairs_lookup.csv")
+)
+
+rm(pairs_lookup)
+```
+
+Import each rater's CSV
+
+```{r}
+#| label: load-raterdata
+
+files <- list(
+  JP = here("data", "data_raw", "rater_publications_final_JP.csv"),
+  DH = here("data", "data_raw", "rater_publications_final_v2_DH.csv"),
+  JR = here("data", "data_raw", "rater_publications_final_v2_JR_scored.csv"),
+  SE = here("data", "data_raw", "rater_publications_full-SE.csv")
+)
+
+raw <- map(files, \(f) read_csv(f, show_col_types = FALSE))
+```
+
+Check that there are 38 publications in common to all rater sheets (Note that this is 4 fewer than anticipated)
+
+```{r}
+#| label: check-num-pubs
+
+ids_common <- reduce(map(raw, \(d) unique(d$pub_id)), intersect)
+
+# Confirm 38 publications
+stopifnot(length(ids_common) == 38)
+```
+
+Reformat to wide for rater analyses
+
+```{r}
+#| label: reformat-data
+
+# Pull pub_id + total_score from each rater, renaming JR's "total" to match
+scores <- list(
+  JP = raw$JP |> dplyr::select(pub_id, JP = total_score),
+  DH = raw$DH |> dplyr::select(pub_id, DH = total_score),
+  JR = raw$JR |> dplyr::select(pub_id, JR = total),
+  SE = raw$SE |> dplyr::select(pub_id, SE = total_score)
+)
+
+# Filter each to the 38 common pub_ids, then join into a single wide tibble
+scores_wide <- purrr::map(scores, \(d) dplyr::filter(d, pub_id %in% ids_common)) |>
+  purrr::reduce(dplyr::left_join, by = "pub_id")
+
+readr::write_csv(scores_wide, here::here("data", "data_processed", "rater_scores_wide.csv"))
+```
+
+# Conduct IRR analysis
+
+## Intra-class correlation 
+
+```{r}
+#| label: icc-analysis
+
+rater_cols <- c("DH", "JP", "JR", "SE")
+
+# Ratings matrix: rows = publications, columns = raters
+ratings_mat <- as.matrix(scores_wide[, rater_cols])
+
+# --- ICC: two-way mixed, absolute agreement, average of k = 4 raters ---
+icc_result <- irr::icc(
+  ratings_mat,
+  model = "twoway",
+  type  = "agreement",
+  unit  = "average"
+)
+print(icc_result)
+
+if (icc_result$value < 0.60) {
+  warning("ICC (average measures) < 0.60 — flag as limitation; per-rater sensitivity analysis required.")
+}
+```
+
+## Krippendorff's alpha
+
+
+```{r}
+#| label: Krip-analysis
+ 
+# kripp.alpha() expects raters as rows, subjects as columns
+
+kripp_result <- irr::kripp.alpha(t(ratings_mat), method = "interval")
+print(kripp_result)
+
+# --- Simple percent agreement ---
+agree_result <- irr::agree(ratings_mat)
+print(agree_result)
+```
+
+# Primary analysis
+
+Calculate mean scores
+
+```{r}
+#| label: calc-mean-scores
+ 
+# Mean FAIR score per publication (average across 4 raters)
+scores_mean <- scores_wide |>
+  dplyr::mutate(mean_score = rowMeans(dplyr::across(dplyr::all_of(rater_cols)))) |>
+  dplyr::select(pub_id, mean_score)
+```
+
+## Get lookup table
+
+```{r}
+#| label: import-lookup
+
+key <- readr::read_csv(
+  here::here("data", "data_processed", "pairs_lookup.csv"),
+  show_col_types = FALSE
+)
+analysis_data <- key |>
+  dplyr::inner_join(scores_mean, by = "pub_id")
+```
+
+## Calculate paired differences
+
+```{r}
+#| label: prep-data
+
+# One row per pair with paired difference 
+pairs_data <- analysis_data |>
+  dplyr::select(pair_id, group, mean_score) |>
+  tidyr::pivot_wider(names_from = group, values_from = mean_score) |>
+  dplyr::mutate(D = LDP - Comparator)
+
+stopifnot(nrow(pairs_data) == 19)
+
+```
+
+## Check normality
+
+```{r}
+#| label: check-normality
+# Normality check (pre-specified assumption check) 
+
+par(mfrow = c(1, 2))
+hist(pairs_data$D,
+     main = "Paired differences",
+     xlab = "LDP \u2212 Comparator (mean FAIR score, 0\u20134 scale)")
+qqnorm(pairs_data$D); qqline(pairs_data$D, col = "red")
+par(mfrow = c(1, 1))
+
+```
+
+
+## Visualize the data
+
+```{r}
+#| label: pairs-plot
+#| 
+analysis_data |>
+  ggplot2::ggplot(ggplot2::aes(x = group, y = mean_score)) +
+  ggplot2::geom_line(ggplot2::aes(group = pair_id), color = "grey") +
+  ggplot2::geom_point(shape = 1, size = 1.5) +
+  ggplot2::scale_x_discrete(limits = c("LDP", "Comparator")) +
+  ggplot2::labs(
+    x = "Group",
+    y = "Mean FAIR compliance score (0\u20134)"
+  ) +
+  ggplot2::theme_bw()
+```
+
+## Conduct permutation test
+
+```{r}
+#| label: perm-test
+ 
+#  Permutation test (PRIMARY)
+set.seed(20260329)
+n_perm   <- 1000
+obs_mean <- mean(pairs_data$D)
+
+perm_means <- replicate(n_perm, {
+  signs <- sample(c(-1, 1), nrow(pairs_data), replace = TRUE)
+  mean(pairs_data$D * signs)
+})
+
+p_perm <- mean(perm_means >= obs_mean)
+
+cat("=== PRIMARY: Permutation test (one-sided, n_perm = 1000) ===\n")
+cat(sprintf("  Observed mean paired difference = %.3f\n", obs_mean))
+cat(sprintf("  p-value                         = %.4f\n", p_perm))
+```
+
+## Supplementary paired t-test
+
+```{r}
+#| label: paired-ttest
+ 
+#   Paired t-test (SECONDARY) 
+cat("\n=== SECONDARY: One-sided paired t-test ===\n")
+t_result <- t.test(pairs_data$D, alternative = "greater", mu = 0)
+print(t_result)
+
+# --- Step 7: Effect size (Cohen's d) ---
+cat("\n=== Effect size ===\n")
+effectsize::cohens_d(pairs_data$D, alternative = "greater")
+```
+
