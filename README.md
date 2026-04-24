@@ -12,6 +12,8 @@ FAIR compliance (Findable, Accessible, Interoperable, Reusable) is assessed on a
 
 The full analysis plan is described in the [pre-registration on OSF](https://osf.io/uyqt4/files/xjmyg).
 
+**NOTE**: minor deviations from the pre-registration include (i) eliminating 3 pairs of papers because they were found to be ineligible (hence N = 19 pairs instead of 21); and (ii) using the permutation test rather than paired t-test as the primary method for the main analysis (but the latter is also reported).  More details will be provided in future outputs. 
+
 ---
 
 ## Quick Start
