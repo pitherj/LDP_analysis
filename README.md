@@ -10,7 +10,9 @@ The [Living Data Project (LDP)](https://www.ciee-icee.ca/ldp.html) is a Canada-w
 
 FAIR compliance (Findable, Accessible, Interoperable, Reusable) is assessed on a 0–4 scale by four independent raters using a standardised checklist. The primary outcome is the mean rater score per publication. Each LDP publication is matched within institution and publication year to a comparator publication from a non-LDP graduate student.
 
-The full analysis plan is described in the [pre-registration on OSF](https://osf.io/uyqt4/files/xjmyg).
+The full analysis plan is described in the [pre-registration on OSF](https://osf.io/uyqt4/files/xjmyg). It is also available [here](https://github.com/pitherj/LDP_pre-registration/blob/main/LDP_preregistration_OSF.md).  
+
+The FAIR compliance checklist is available [here](https://github.com/pitherj/LDP_pre-registration/blob/main/FAIR-compliance-checklist.md).
 
 **NOTE**: minor deviations from the pre-registration include (i) eliminating 3 pairs of papers because they were found to be ineligible (hence N = 19 pairs instead of 21); and (ii) using the permutation test rather than paired t-test as the primary method for the main analysis (but the latter is also reported).  More details will be provided in future outputs. 
 
