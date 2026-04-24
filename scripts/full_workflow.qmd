@@ -259,8 +259,8 @@ cat(sprintf("  p-value                         = %.4f\n", p_perm))
 
 ```{r}
 #| label: paired-ttest
- 
-#   Paired t-test (SECONDARY) 
+
+#   Paired t-test (SECONDARY)
 cat("\n=== SECONDARY: One-sided paired t-test ===\n")
 t_result <- t.test(pairs_data$D, alternative = "greater", mu = 0)
 print(t_result)
@@ -268,5 +268,115 @@ print(t_result)
 # --- Step 7: Effect size (Cohen's d) ---
 cat("\n=== Effect size ===\n")
 effectsize::cohens_d(pairs_data$D, alternative = "greater")
+```
+
+# Sensitivity analysis: leave-one-rater-out
+
+For each rater, the ICC and permutation test are repeated using the remaining three raters' scores. Results are compared to the full four-rater baseline to identify which rater had the greatest influence on the findings.
+
+```{r}
+#| label: loo-setup
+#| output: false
+
+run_loo <- function(use_raters, label, scores_wide, key,
+                    seed = 20260329L, n_perm = 1000L) {
+
+  scores_mean <- scores_wide |>
+    dplyr::mutate(
+      mean_score = rowMeans(dplyr::across(dplyr::all_of(use_raters)))
+    ) |>
+    dplyr::select(pub_id, mean_score)
+
+  pairs <- key |>
+    dplyr::inner_join(scores_mean, by = "pub_id") |>
+    dplyr::select(pair_id, group, mean_score) |>
+    tidyr::pivot_wider(names_from = group, values_from = mean_score) |>
+    dplyr::mutate(D = LDP - Comparator)
+
+  icc_res <- irr::icc(
+    as.matrix(scores_wide[, use_raters]),
+    model = "twoway", type = "agreement", unit = "average"
+  )
+
+  set.seed(seed)
+  obs_mean   <- mean(pairs$D)
+  perm_means <- replicate(n_perm, {
+    signs <- sample(c(-1L, 1L), nrow(pairs), replace = TRUE)
+    mean(pairs$D * signs)
+  })
+
+  tibble::tibble(
+    excluded_rater = label,
+    k              = length(use_raters),
+    icc            = icc_res$value,
+    icc_lower      = icc_res$lbound,
+    icc_upper      = icc_res$ubound,
+    obs_mean_D     = obs_mean,
+    p_perm         = mean(perm_means >= obs_mean)
+  )
+}
+
+baseline <- run_loo(rater_cols, "none (all 4)", scores_wide, key)
+
+loo_results <- purrr::map(
+  rater_cols,
+  \(r) run_loo(setdiff(rater_cols, r), r, scores_wide, key)
+) |>
+  purrr::list_rbind()
+
+results_tbl <- dplyr::bind_rows(baseline, loo_results)
+
+influence_tbl <- loo_results |>
+  dplyr::mutate(
+    delta_icc    = icc        - baseline$icc,
+    delta_mean_D = obs_mean_D - baseline$obs_mean_D,
+    delta_p_perm = p_perm     - baseline$p_perm,
+    norm_icc     = abs(delta_icc)    / max(abs(delta_icc),    1e-9),
+    norm_mean_D  = abs(delta_mean_D) / max(abs(delta_mean_D), 1e-9),
+    norm_p_perm  = abs(delta_p_perm) / max(abs(delta_p_perm), 1e-9),
+    composite    = (norm_icc + norm_mean_D + norm_p_perm) / 3
+  ) |>
+  dplyr::arrange(dplyr::desc(composite)) |>
+  dplyr::select(excluded_rater, delta_icc, delta_mean_D, delta_p_perm, composite)
+```
+
+## Results
+
+```{r}
+#| label: loo-results-table
+
+results_tbl |>
+  dplyr::mutate(
+    icc        = round(icc,        3),
+    icc_lower  = round(icc_lower,  3),
+    icc_upper  = round(icc_upper,  3),
+    obs_mean_D = round(obs_mean_D, 3),
+    p_perm     = round(p_perm,     4)
+  ) |>
+  knitr::kable(
+    col.names = c(
+      "Excluded rater", "k",
+      "ICC", "ICC 95% CI lower", "ICC 95% CI upper",
+      "Mean paired diff.", "Permutation p"
+    ),
+    caption = "Table S1. ICC and permutation test results for the full four-rater baseline and each leave-one-out run."
+  )
+```
+
+## Influence assessment
+
+```{r}
+#| label: loo-influence-table
+
+influence_tbl |>
+  dplyr::mutate(dplyr::across(where(is.double), \(x) round(x, 3))) |>
+  knitr::kable(
+    col.names = c(
+      "Excluded rater",
+      "\u0394 ICC", "\u0394 Mean paired diff.", "\u0394 Permutation p",
+      "Composite influence"
+    ),
+    caption = "Table S2. Change from four-rater baseline for each leave-one-out run. Positive \u0394 ICC: reliability improves without that rater. Positive \u0394 permutation p: result is less significant without that rater. Composite influence is the mean of the three normalised absolute deviations (range 0\u20131; higher = more influential)."
+  )
 ```
 

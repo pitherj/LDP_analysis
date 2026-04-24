@@ -1,0 +1,154 @@
+# Data Dictionary — data/data_raw/
+
+Raw rater evaluation files for the LDP FAIR compliance study. Each file contains FAIR compliance scores assigned independently by one rater across a set of publications. A private subdirectory holds the pairing key linking publications to matched groups.
+
+All files were created manually by raters and are not auto-downloaded.
+
+---
+
+## Directory Contents
+
+```
+data_raw/
+├── rater_publications_final_JP.csv          # Rater JP scores
+├── rater_publications_final_v2_DH.csv       # Rater DH scores
+├── rater_publications_final_v2_JR_scored.csv  # Rater JR scores
+├── rater_publications_full-SE.csv           # Rater SE scores
+└── data_private/                            # Git-ignored; not documented here
+    └── rater_key_final_v2.csv              # Identifiable pairing key
+```
+
+---
+
+## Notes on rater files
+
+All four rater files share the same core identifier columns (`pub_id`, `title`, `doi`, `publication_year`, `openalex_url`) and the same scoring structure (eight FAIR sub-items summing to a composite `total_score` in [0, 4]), but each rater used their own column naming conventions. The column schemas below reflect each file as delivered.
+
+The column used in analysis (`total_score`, or `total` for JR — renamed in the workflow) is highlighted in each schema.
+
+**Filters applied by pipeline** (`scripts/full_workflow.qmd`): only the 38 `pub_id` values present in all four rater files are retained for analysis. Four publications present in one or two rater files are excluded.
+
+---
+
+## File: rater_publications_final_JP.csv
+
+Rater JP's independent FAIR compliance scores.
+
+**Rows:** 42 publications (pre-filter); 38 used in analysis  
+**Provenance:** Manually scored by rater JP using the standardised FAIR compliance checklist  
+**Used by:** `scripts/full_workflow.qmd`
+
+| Column | Type | Units | Description | Nullable |
+|---|---|---|---|---|
+| `pub_id` | character | — | Unique publication identifier (6-character alphanumeric) | no |
+| `title` | character | — | Publication title | no |
+| `doi` | character | — | Digital Object Identifier (full URL form) | yes |
+| `publication_year` | integer | year | Calendar year of publication | no |
+| `openalex_url` | character | — | OpenAlex work record URL | yes |
+| `Findable (1, 0.5, 0)` | numeric | points | Findability score: 1 = structured data availability statement with working pointer; 0.5 = unstructured; 0 = absent or broken | no |
+| `Accessible (1, 0)` | numeric | points | Accessibility score: 1 = data downloadable or recreatable, or restricted with clear access protocols; 0 = otherwise | no |
+| `Interoperable (1, 0)` | numeric | points | Interoperability score: 1 = open-specification format; 0 = closed/proprietary | no |
+| `Reusable_ff (0.2, 0)` | numeric | points | Reusable sub-item: file formats identified (0.2 or 0) | no |
+| `Reusable_coll (0.2, 0)` | numeric | points | Reusable sub-item: collection protocols noted (0.2 or 0) | no |
+| `Reusable_process (0.2, 0)` | numeric | points | Reusable sub-item: scripted data processing included (0.2 or 0) | no |
+| `Reusable_vars (0.2, 0)` | numeric | points | Reusable sub-item: variables fulsomely described (0.2 or 0) | no |
+| `License (0.2, 0)` | numeric | points | Reusable sub-item: public or bespoke license attached (0.2 or 0) | no |
+| **`total_score`** | **numeric** | **points** | **Composite FAIR compliance score (sum of above; range 0–4); used in analysis** | no |
+| `Notes` | character | — | Rater notes and justifications | yes |
+
+---
+
+## File: rater_publications_final_v2_DH.csv
+
+Rater DH's independent FAIR compliance scores.
+
+**Rows:** 42 publications (pre-filter); 38 used in analysis  
+**Provenance:** Manually scored by rater DH using the standardised FAIR compliance checklist  
+**Used by:** `scripts/full_workflow.qmd`
+
+| Column | Type | Units | Description | Nullable |
+|---|---|---|---|---|
+| `pub_id` | character | — | Unique publication identifier (6-character alphanumeric) | no |
+| `title` | character | — | Publication title | no |
+| `doi` | character | — | Digital Object Identifier (full URL form) | yes |
+| `publication_year` | integer | year | Calendar year of publication | no |
+| `openalex_url` | character | — | OpenAlex work record URL | yes |
+| `original` | character | — | Flags whether this is the originally assigned publication (`yes`); rater-internal field, not used in analysis | yes |
+| **`total_score`** | **numeric** | **points** | **Composite FAIR compliance score (range 0–4); used in analysis** | no |
+| `F` | numeric | points | Findability sub-score (1, 0.5, or 0) | no |
+| `A` | numeric | points | Accessibility sub-score (1 or 0) | no |
+| `I` | numeric | points | Interoperability sub-score (1 or 0) | no |
+| `R-formats` | numeric | points | Reusable sub-item: file formats identified (0.2 or 0) | no |
+| `R protocols` | numeric | points | Reusable sub-item: collection protocols noted (0.2 or 0) | no |
+| `R script` | numeric | points | Reusable sub-item: scripted data processing included (0.2 or 0) | no |
+| `R variables` | numeric | points | Reusable sub-item: variables fulsomely described (0.2 or 0) | no |
+| `R License` | numeric | points | Reusable sub-item: license attached (0.2 or 0) | no |
+| `Notes` | character | — | Rater notes and justifications | yes |
+
+---
+
+## File: rater_publications_final_v2_JR_scored.csv
+
+Rater JR's independent FAIR compliance scores.
+
+**Rows:** 38 publications (matches common set; no additional records)  
+**Provenance:** Manually scored by rater JR using the standardised FAIR compliance checklist  
+**Used by:** `scripts/full_workflow.qmd`  
+**Note:** The composite score column is named `total` in this file; it is renamed to `total_score` by the pipeline.
+
+| Column | Type | Units | Description | Nullable |
+|---|---|---|---|---|
+| `pub_id` | character | — | Unique publication identifier (6-character alphanumeric) | no |
+| `title` | character | — | Publication title | no |
+| `doi` | character | — | Digital Object Identifier (full URL form) | yes |
+| `publication_year` | integer | year | Calendar year of publication | no |
+| `openalex_url` | character | — | OpenAlex work record URL | yes |
+| `original` | character | — | Flags whether this is the originally assigned publication (`yes`); rater-internal field, not used in analysis | yes |
+| `Findable` | numeric | points | Findability sub-score (1, 0.5, or 0) | no |
+| `Accessible` | numeric | points | Accessibility sub-score (1 or 0) | no |
+| `Interoperable` | numeric | points | Interoperability sub-score (1 or 0) | no |
+| `Reusable_File formats are identified` | numeric | points | Reusable sub-item: file formats identified (0.2 or 0) | no |
+| `Reusable: Collection protocols are noted` | numeric | points | Reusable sub-item: collection protocols noted (0.2 or 0) | no |
+| `Reusable: Includes scripted data processing` | numeric | points | Reusable sub-item: scripted data processing included (0.2 or 0) | no |
+| `Reusable: Variables are fulsomely described` | numeric | points | Reusable sub-item: variables fulsomely described (0.2 or 0) | no |
+| `Reusable: A publicly sourced license is attached, or a bespoke license is included with a lay summary` | numeric | points | Reusable sub-item: license attached (0.2 or 0) | no |
+| **`total`** | **numeric** | **points** | **Composite FAIR compliance score (range 0–4); renamed `total_score` by pipeline; used in analysis** | no |
+| `Notes` | character | — | Rater notes and justifications | yes |
+
+---
+
+## File: rater_publications_full-SE.csv
+
+Rater SE's independent FAIR compliance scores.
+
+**Rows:** 43 publications (pre-filter); 38 used in analysis  
+**Provenance:** Manually scored by rater SE using the standardised FAIR compliance checklist  
+**Used by:** `scripts/full_workflow.qmd`
+
+| Column | Type | Units | Description | Nullable |
+|---|---|---|---|---|
+| `pub_id` | character | — | Unique publication identifier (6-character alphanumeric) | no |
+| `title` | character | — | Publication title | no |
+| `doi` | character | — | Digital Object Identifier (full URL form) | yes |
+| `publication_year` | integer | year | Calendar year of publication | no |
+| `openalex_url` | character | — | OpenAlex work record URL | yes |
+| `F-Score` | numeric | points | Findability sub-score (1, 0.5, or 0) | no |
+| `A-score` | numeric | points | Accessibility sub-score (1 or 0) | no |
+| `I-score` | numeric | points | Interoperability sub-score (1 or 0) | no |
+| `R_fileformats` | numeric | points | Reusable sub-item: file formats identified (0.2 or 0) | no |
+| `R_collectionprotocols` | numeric | points | Reusable sub-item: collection protocols noted (0.2 or 0) | no |
+| `R_scriptedprocessing` | numeric | points | Reusable sub-item: scripted data processing included (0.2 or 0) | no |
+| `R_variables` | numeric | points | Reusable sub-item: variables fulsomely described (0.2 or 0) | no |
+| `R_license` | numeric | points | Reusable sub-item: license attached (0.2 or 0) | no |
+| **`total_score`** | **numeric** | **points** | **Composite FAIR compliance score (range 0–4); used in analysis** | no |
+| `notes` | character | — | Rater notes and justifications | yes |
+
+---
+
+## Directory: data_private/
+
+**Git-ignored:** yes — this directory is excluded from version control via `.gitignore`.
+
+Contains `rater_key_final_v2.csv`, which links each `pub_id` to its matched pair and group (LDP vs. Comparator) and includes identifiable author information (student names, institutions). This file is not documented in detail here to protect participant privacy. Contact the project lead to obtain it.
+
+The pipeline reads this file in a hidden Quarto chunk, strips it to three non-sensitive columns (`pub_id`, `pair_id`, `group`), writes the result to `data/data_processed/pairs_lookup.csv`, and removes the object from the R environment before any subsequent chunks execute.
