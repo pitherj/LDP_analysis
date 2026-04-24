@@ -143,7 +143,7 @@ quarto render scripts/full_workflow.qmd
 
 If referencing the pre-registration:
 
-> Pither, J., Vis-Dunbar, M., & Srivastava, D. (2026). *Assessing Open Science Practices Among Graduates of the Living Data Project, a Canada-wide Graduate Training Program*. OSF Pre-registration. https://osf.io/uyqt4/files/xjmyg
+> Jason Pither, Diane Srivastava, David AGA Hunt, Sandra Emry, Jessica Reemeyer, and Mathew Vis-Dunbar. (2026). *Assessing Open Science Practices Among Graduates of the Living Data Project, a Canada-wide Graduate Training Program*. OSF Pre-registration. https://osf.io/uyqt4/files/xjmyg
 
 ---
 
@@ -153,7 +153,7 @@ If referencing the pre-registration:
 
 Jason Pither — [0000-0002-7490-6839](https://orcid.org/0000-0002-7490-6839)  
 Department of Biology, University of British Columbia Okanagan  
-[TODO: institutional email]
+Email: jason [dot] pither <at> ubc [dot] ca
 
 **Co-investigators**
 
@@ -188,4 +188,4 @@ Code in this repository is licensed under the [GNU General Public License v2](LI
 ## Acknowledgments
 
 - Funded through the Canadian Institute of Ecology and Evolution (CIEE) NSERC CREATE program
-- Analysis assisted by [Claude Code](https://claude.ai/code) (Anthropic)
+- Some coding assisted by [Claude Code](https://claude.ai/code) (Anthropic)
