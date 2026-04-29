@@ -1,0 +1,260 @@
+---
+title: "PRISMA-Style Publication Flow Diagram"
+subtitle: "Record flow from OpenAlex retrieval to final rater set — LDP quasi-experimental study"
+author: "Jason Pither"
+date: today
+format:
+  html:
+    self-contained: true
+    toc: false
+execute:
+  echo: false
+  warning: false
+  message: false
+---
+
+## Purpose
+
+This document renders a PRISMA-style flow diagram tracing LDP and comparator publications
+from initial OpenAlex retrieval through all filtering and matching steps to the final
+19-pair rater set.
+
+### Data sources for all counts
+
+| Count | Source |
+|---|---|
+| Filtering steps (Layers 0–3) | `LDP_find-articles/data/processed_data/private/filter_log.txt` (run 2026-03-29) |
+| Matching step (Script 04) | `rater_key.csv` (21 initial pairs); `LDP_publications_filtered.csv` (22 LDP authors; 1 unmatched [name hidden]) |
+| Post-hoc corrections (Scripts 06–08) | `LDP_find-articles/README.md` addendum + scripts 06–08 |
+
+### Filtering layer descriptions
+
+**Layer 0 — Investigator co-authorship exclusion.**
+Publications co-authored by any of the five study investigators (verified by ORCID) are
+removed from both pools. Only papers already in each dataset are checked — no external
+investigator publication lists are fetched.
+
+**Layer 1 — Title deduplication.**
+Within-author duplicates (same Unicode-normalised title, same searched name) and
+cross-author duplicates (same normalised title attributed to two different searched names)
+are removed. For cross-author duplicates, the alphabetically first searched name is kept.
+
+**Layers 2a/2b — Article type and Crossref filter.**
+Retains only OpenAlex `type == "article"` records; additionally drops `is_paratext == TRUE`
+and Crossref types associated with non-primary-research content (reviews, editorials,
+letters, corrections, etc.). *No records were excluded by this layer in either group.*
+
+**Layer 3 — Title keyword screen.**
+Titles matching word-boundary patterns for non-primary content (`review`, `perspective`,
+`commentary`, `editorial`, `meta-analysis`, `response to`, `corrigendum`, `erratum`,
+`retraction`) are excluded.
+
+---
+
+```{r}
+#| label: prisma-diagram
+#| fig-cap: >
+#|   PRISMA-style flow of LDP and comparator publications from OpenAlex retrieval
+#|   to the final 19-pair rater set. Blue boxes = LDP track; green boxes = comparator
+#|   track; yellow boxes = matching / post-hoc correction steps; red boxes = excluded
+#|   or removed records; amber box = replaced (not excluded) records.
+
+library(DiagrammeR)
+
+# Store DOT source in a variable so the export chunk can reuse it
+# without duplicating the diagram definition.
+dot_src <- '
+digraph prisma {
+
+  graph [rankdir  = TB,
+         splines  = ortho,
+         nodesep  = 0.55,
+         ranksep  = 0.55,
+         fontname = "Helvetica",
+         bgcolor  = "white"]
+
+  node [fontname = "Helvetica",
+        fontsize  = 9,
+        style     = "filled,rounded",
+        shape     = rectangle,
+        margin    = "0.15,0.10",
+        penwidth  = 1.2]
+
+  edge [arrowsize = 0.7,
+        penwidth  = 1.0]
+
+  //=================================================================
+  // LDP MAIN FLOW  (left column)
+  //=================================================================
+
+  ldp_r [label  = "LDP PUBLICATIONS\nRetrieved via OpenAlex\nn = 55  |  23 authors",
+         fillcolor = "#D6EAF8", color = "#1A5276", width = 2.8,
+         fontname  = "Helvetica-Bold"]
+
+  ldp_0 [label  = "After investigator\nco-authorship exclusion\nn = 54",
+         fillcolor = "#D6EAF8", color = "#1A5276", width = 2.8]
+
+  ldp_1 [label  = "After title\ndeduplication\nn = 54",
+         fillcolor = "#D6EAF8", color = "#1A5276", width = 2.8]
+
+  ldp_23 [label = "After type and keyword\nscreening\nn = 53  |  22 authors eligible",
+          fillcolor = "#D6EAF8", color = "#1A5276", width = 2.8]
+
+  //=================================================================
+  // COMPARATOR MAIN FLOW  (right column)
+  //=================================================================
+
+  comp_r [label  = "COMPARATOR PUBLICATIONS\nRetrieved via OpenAlex\nn = 262  |  109 authors",
+          fillcolor = "#D5F5E3", color = "#1D6A39", width = 2.8,
+          fontname  = "Helvetica-Bold"]
+
+  comp_0 [label  = "After investigator\nco-authorship exclusion\nn = 258",
+          fillcolor = "#D5F5E3", color = "#1D6A39", width = 2.8]
+
+  comp_1 [label  = "After title\ndeduplication\nn = 250",
+          fillcolor = "#D5F5E3", color = "#1D6A39", width = 2.8]
+
+  comp_23 [label = "After type and keyword\nscreening\nn = 248  |  105 authors eligible",
+           fillcolor = "#D5F5E3", color = "#1D6A39", width = 2.8]
+
+  //=================================================================
+  // EXCLUSION BOXES  (centre column, rows 2-4)
+  //=================================================================
+
+  e_L0 [label = "Layer 0 - Investigator co-authorship exclusion\nLDP: excluded n = 1\nComparator: excluded n = 4",
+        fillcolor = "#FADBD8", color = "#922B21", width = 2.8]
+
+  e_L1 [label = "Layer 1 - Title deduplication\nLDP: none excluded\nComparator: excluded n = 8\n  (within-author: 5;  cross-author: 3)",
+        fillcolor = "#FADBD8", color = "#922B21", width = 2.8]
+
+  e_L23 [label = "Layers 2a/2b + 3 - Type and keyword screening\nLDP: excluded n = 1  (keyword match)\nComparator: excluded n = 2  (keyword match)\n[Layers 2a/2b: none excluded in either group]",
+         fillcolor = "#FADBD8", color = "#922B21", width = 2.8]
+
+  //=================================================================
+  // MATCHING STEP
+  //=================================================================
+
+  match [label = "Year- and institution-matched pairs formed  (Script 04;  seed = 20260329)\nn = 21 pairs",
+         fillcolor = "#FEF9E7", color = "#7D6608", width = 6.4,
+         style = "filled,rounded"]
+
+  e_match [label = "1 LDP author unmatched\nNo comparator available at same\ninstitution and calendar year",
+           fillcolor = "#FADBD8", color = "#922B21", width = 2.8]
+
+  //=================================================================
+  // POST-HOC CORRECTIONS
+  //=================================================================
+
+  drop [label = "2 complete pairs dropped - no eligible LDP replacement  (Script 06)\nPAIR006  (McGill, 2024): LDP publication was not primary research\nPAIR020  (UBC, 2024): LDP publication was a conference abstract\nn = 19 pairs",
+        fillcolor = "#FEF9E7", color = "#7D6608", width = 6.4,
+        style = "filled,rounded"]
+
+  e_drop [label = "Dropped: 2 pairs\n(4 publications removed)",
+          fillcolor = "#FADBD8", color = "#922B21", width = 2.8]
+
+  replace [label = "4 comparator publications replaced within intact pairs  (Scripts 07-08)\nn = 19 pairs  (unchanged)",
+           fillcolor = "#FEF9E7", color = "#7D6608", width = 6.4,
+           style = "filled,rounded"]
+
+  e_replace [label = "Script 07 - replaced (ineligible): n = 3\n  R75BCN  PAIR021: case study\n  OZ2HY7  PAIR017: corresponding-author duplicate\n  TILMW1  PAIR019: conference abstract\nScript 08 - replaced (inaccessible): n = 1\n  N3V3VY  PAIR017: journal unavailable via UBC",
+             fillcolor = "#FFF3CD", color = "#7D6608", width = 2.8]
+
+  //=================================================================
+  // FINAL BOX
+  //=================================================================
+
+  final [label = "FINAL RATER SET\n19 matched pairs\n(19 LDP publications  +  19 Comparator publications)",
+         fillcolor = "#82E0AA", color = "#1D6A39", width = 6.4,
+         style = "filled,bold,rounded", fontsize = 11]
+
+  //=================================================================
+  // MAIN FLOW EDGES
+  //=================================================================
+
+  ldp_r  -> ldp_0
+  ldp_0  -> ldp_1
+  ldp_1  -> ldp_23
+  ldp_23 -> match
+
+  comp_r  -> comp_0
+  comp_0  -> comp_1
+  comp_1  -> comp_23
+  comp_23 -> match
+
+  match   -> drop
+  drop    -> replace
+  replace -> final
+
+  //=================================================================
+  // EXCLUSION EDGES  (constraint = false: no rank effect)
+  // Arrows originate from the step input and point to the exclusion
+  // box, which is placed at the same rank as the step output.
+  //=================================================================
+
+  ldp_r  -> e_L0   [constraint = false, style = dashed, color = "#A93226"]
+  comp_r -> e_L0   [constraint = false, style = dashed, color = "#A93226"]
+
+  ldp_0  -> e_L1   [constraint = false, style = dashed, color = "#A93226"]
+  comp_0 -> e_L1   [constraint = false, style = dashed, color = "#A93226"]
+
+  ldp_1  -> e_L23  [constraint = false, style = dashed, color = "#A93226"]
+  comp_1 -> e_L23  [constraint = false, style = dashed, color = "#A93226"]
+
+  ldp_23 -> e_match   [constraint = false, style = dashed, color = "#A93226"]
+  match  -> e_drop    [constraint = false, style = dashed, color = "#A93226"]
+  drop   -> e_replace [constraint = false, style = dashed, color = "#7D6608"]
+
+  //=================================================================
+  // RANK GROUPS  (force same horizontal level)
+  //=================================================================
+
+  { rank = same;  ldp_r;    comp_r                   }
+  { rank = same;  ldp_0;    e_L0;    comp_0           }
+  { rank = same;  ldp_1;    e_L1;    comp_1           }
+  { rank = same;  ldp_23;   e_L23;   comp_23          }
+  { rank = same;  match;    e_match                   }
+  { rank = same;  drop;     e_drop                    }
+  { rank = same;  replace;  e_replace                 }
+
+  //=================================================================
+  // INVISIBLE ORDERING EDGES  (enforce left-to-right within each rank)
+  //=================================================================
+
+  ldp_r  -> comp_r  [style = invis]
+
+  ldp_0  -> e_L0  -> comp_0  [style = invis]
+  ldp_1  -> e_L1  -> comp_1  [style = invis]
+  ldp_23 -> e_L23 -> comp_23 [style = invis]
+
+  match   -> e_match   [style = invis]
+  drop    -> e_drop    [style = invis]
+  replace -> e_replace [style = invis]
+
+}
+'
+
+grViz(dot_src, height = 950, width = "100%")
+```
+
+---
+
+```{r}
+#| label: export-svg-pdf
+
+library(DiagrammeRsvg)
+library(rsvg)
+library(here)
+
+# Render to SVG string using dot_src defined in the prisma-diagram chunk above
+svg_str  <- DiagrammeRsvg::export_svg(grViz(dot_src))
+svg_path <- here::here("scripts", "prisma_flow.svg")
+pdf_path <- here::here("scripts", "prisma_flow.pdf")
+
+# Write SVG
+writeLines(svg_str, svg_path)
+
+# Convert the saved SVG file to PDF
+rsvg::rsvg_pdf(svg = svg_path, file = pdf_path)
+
+message("Exported:\n  ", svg_path, "\n  ", pdf_path)
+```
