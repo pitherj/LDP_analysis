@@ -14,7 +14,7 @@ The full analysis plan is described in the [pre-registration on OSF](https://osf
 
 The FAIR compliance checklist is available [here](https://github.com/pitherj/LDP_pre-registration/blob/main/FAIR-compliance-checklist.md).
 
-**NOTE**: minor deviations from the pre-registration include (i) eliminating 3 pairs of papers because they were found to be ineligible (hence N = 19 pairs instead of 21); and (ii) using the permutation test rather than paired t-test as the primary method for the main analysis (but the latter is also reported).  More details will be provided in future outputs. 
+**NOTE**: minor deviations from the pre-registration include (i) eliminating 3 pairs of papers because they were found to be ineligible (hence N = 19 pairs instead of 21); and (ii) using the permutation test rather than paired t-test as the primary method for the main analysis (but the latter is also reported).   
 
 ---
 
@@ -69,6 +69,8 @@ Key packages (all locked in `renv.lock`):
 | `effectsize` | Cohen's *d* |
 | `ggplot2` | Visualisation |
 | `here` | Portable file paths |
+| `DiagrammeR` | PRISMA-style record-flow diagram (Graphviz) |
+| `DiagrammeRsvg`, `rsvg` | SVG / PDF export of the flow diagram |
 
 ### Data
 
@@ -91,7 +93,12 @@ LDP_analysis/
 │       ├── pairs_lookup.csv    # Non-sensitive pairing lookup (pub_id, pair_id, group)
 │       └── rater_scores_wide.csv  # FAIR scores in wide format (one row per publication)
 ├── scripts/
-│   └── full_workflow.qmd       # Single Quarto document: full analysis pipeline
+│   ├── full_workflow.qmd       # Main Quarto document: PRISMA diagram + full analysis pipeline
+│   ├── full_workflow.html      # Rendered analysis report (self-contained)
+│   ├── prisma_flow.qmd         # Standalone PRISMA-style record-flow diagram
+│   ├── prisma_flow.html        # Rendered standalone diagram (self-contained)
+│   ├── prisma_flow.svg         # Vector export of the flow diagram
+│   └── prisma_flow.pdf         # PDF export of the flow diagram
 ├── renv/                       # renv package library (git-ignored)
 ├── renv.lock                   # Locked package versions (committed)
 ├── LDP_analysis.Rproj          # RStudio project file
@@ -104,13 +111,17 @@ LDP_analysis/
 
 All analysis is contained in `scripts/full_workflow.qmd`. The document is structured as follows:
 
-1. **Import private key** (hidden chunk) — reads `rater_key_final_v2.csv`, strips to `pub_id`, `pair_id`, `group`, writes `pairs_lookup.csv`, then removes the object from the environment.
-2. **Import rater data** — reads all four rater CSVs; confirms 38 publications are common to all four raters.
-3. **Reformat to wide** — aligns per-rater scores into a single wide tibble (`scores_wide`); writes `rater_scores_wide.csv`.
-4. **Inter-rater reliability** — ICC (two-way mixed, absolute agreement, average of *k* = 4 raters); Krippendorff's α (interval scale); percent agreement.
-5. **Primary analysis** — computes mean FAIR score per publication, joins pairing lookup, calculates paired differences (*D* = LDP − Comparator), runs a one-sided permutation test (seed = 20260329, *n* = 1000).
-6. **Secondary analysis** — one-sided paired *t*-test; Cohen's *d* via `effectsize`.
-7. **Visualisation** — paired plot (one line per matched pair).
+1. **Summary of data screening** — PRISMA-style flow diagram tracing both publication pools from OpenAlex retrieval through all filtering, matching, and post-hoc correction steps to the final 19-pair rater set (rendered via `DiagrammeR`).
+2. **Import private key** (hidden chunk) — reads `rater_key_final_v2.csv`, strips to `pub_id`, `pair_id`, `group`, writes `pairs_lookup.csv`, then removes the object from the environment.
+3. **Import rater data** — reads all four rater CSVs; confirms 38 publications are common to all four raters.
+4. **Reformat to wide** — aligns per-rater scores into a single wide tibble (`scores_wide`); writes `rater_scores_wide.csv`.
+5. **Inter-rater reliability** — ICC (two-way mixed, absolute agreement, average of *k* = 4 raters); Krippendorff's α (interval scale); percent agreement.
+6. **Primary analysis** — computes mean FAIR score per publication, joins pairing lookup, calculates paired differences (*D* = LDP − Comparator), runs a one-sided permutation test (seed = 20260329, *n* = 1000).
+7. **Secondary analysis** — one-sided paired *t*-test; Cohen's *d* via `effectsize`.
+8. **Visualisation** — paired plot (one line per matched pair).
+9. **Post-hoc sensitivity analysis** — assessment of rater influence on results.
+
+A standalone version of the PRISMA diagram (with extended documentation of data sources and filtering layer descriptions) is available in `scripts/prisma_flow.qmd`. Rendering that file also exports `prisma_flow.svg` and `prisma_flow.pdf` for use in manuscripts.
 
 Render by opening `full_workflow.qmd` in RStudio and clicking Render, or from the terminal:
 
@@ -124,7 +135,10 @@ quarto render scripts/full_workflow.qmd
 
 | Output | Location | Description |
 |---|---|---|
-| `full_workflow.html` | `scripts/` | Self-contained rendered analysis report |
+| `full_workflow.html` | `scripts/` | Self-contained rendered analysis report (includes PRISMA diagram) |
+| `prisma_flow.html` | `scripts/` | Standalone self-contained PRISMA record-flow diagram |
+| `prisma_flow.svg` | `scripts/` | Vector (SVG) export of the PRISMA diagram |
+| `prisma_flow.pdf` | `scripts/` | PDF export of the PRISMA diagram |
 | `pairs_lookup.csv` | `data/data_processed/` | Non-sensitive pairing key |
 | `rater_scores_wide.csv` | `data/data_processed/` | Wide-format FAIR scores (38 publications × 4 raters) |
 
