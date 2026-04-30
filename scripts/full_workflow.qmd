@@ -28,28 +28,32 @@ library(irr)
 library(effectsize)
 library(ggplot2)
 library(DiagrammeR)
+library(jsonlite)
+library(stringr)
 ```
 
 # Background
 
 This script follows the analysis plans described in the [pre-registration](https://osf.io/uyqt4/files/xjmyg) for this project.  
 
-The main steps are: 
+The main steps are:
 
-1. summary of data screening process
-2. importing the rater evaluation data
-3. reformatting the rater data for analyses
-4. conducting an assessment of inter-rater reliability using two complementary measures: 
-  - Intraclass Correlation Coefficient (ICC). 
-  - Krippendorff's alpha (ordinal) 
-These are reported descriptively. If ICC (average measures) < 0.60, this will be flagged as a limitation and a sensitivity analysis using per-rater scores will be added.
-5. primary analysis:
-  - calculate the average scores for each output
-  - calculate the paired differences between LDP and matched outputs
-  - visualize the differences
-  - conduct a permutation test on the differences
-  - additionally conduct and report the results of a paired t-test, with Cohen's D
-6. post-hoc sensitivity analysis on rater influence
+1. **Summary of data screening** — PRISMA-style flow diagram tracing both publication pools from OpenAlex retrieval to the final 19-pair rater set; institution-level breakdown of matched pairs.
+2. **Import and format rater data** — read the four rater CSVs; confirm 38 publications common to all raters; reformat to wide format.
+3. **Inter-rater reliability** — two complementary measures:
+  - Intraclass Correlation Coefficient (ICC; two-way mixed, absolute agreement, average of k = 4 raters)
+  - Krippendorff's alpha (interval scale)
+  - Reported descriptively. If ICC (average measures) < 0.60, this will be flagged as a limitation and a per-rater sensitivity analysis added.
+4. **Primary analysis** — compute mean FAIR score per publication; calculate within-pair differences (D = LDP − Comparator); check normality; visualise paired data; conduct one-sided permutation test (primary); one-sided paired t-test with Cohen's *d* (secondary).
+5. **Planned sensitivity analysis** — repeated random pairing robustness check: repeat primary paired t-test across 100 random within-institution pairings to assess sensitivity of the variance estimate to arbitrary pairing choices.
+6. **Pre-planned exploratory analyses** (labelled as exploratory throughout):
+  - FAIR component breakdown: separate group comparisons for each FAIR letter score and Reusable sub-components (Documentation, Licensing)
+  - Institution-level subgroup analysis: within-institution comparisons for UBC and McGill
+  - Score distribution visualization: FAIR score and paired difference distributions by group
+7. **Sensitivity analysis: leave-one-rater-out** — ICC and permutation test repeated excluding each rater in turn; composite influence metric reported.
+8. **Variability assumptions: assumed vs. observed values** — post-hoc comparison of the σ~D~ range assumed in the pre-registered power analysis against the values actually observed in the data.
+9. **Unplanned exploratory analyses** — post-hoc, descriptive only, not pre-registered:
+  - Journal data sharing policies: CrossRef metadata retrieval and TOP Factor matching for all 38 publication DOIs; comparison of Data Transparency scores for LDP vs. Comparator journals within matched pairs; sensitivity analysis using zero-imputed scores for journals absent from the TOP database; FAIR compliance scores stratified by journal policy tier.
 
 # Summary of data screening
 
@@ -59,8 +63,9 @@ The diagram below traces how LDP and comparator publications were retrieved, fil
 #| label: prisma-diagram
 #| fig-cap: >
 #|   PRISMA-style record flow from OpenAlex retrieval to the final 19-pair rater set.
-#|   Blue = LDP track; green = comparator track; yellow = matching / post-hoc steps;
-#|   red = excluded records; amber = replaced (not excluded) records.
+#|   Light blue = LDP track; light green = comparator track; dark green = final output;
+#|   light yellow = matching / post-hoc steps; red = excluded records;
+#|   amber = replaced (not excluded) records.
 #| cache: false
 
 dot_src <- '
@@ -186,6 +191,39 @@ digraph prisma {
 '
 
 DiagrammeR::grViz(dot_src, height = 950, width = "100%")
+```
+
+## Final matched pairs by institution
+
+```{r}
+#| label: institution-summary
+#| echo: false
+#| cache: false
+
+key_inst <- readr::read_csv(
+  here::here("data", "data_raw", "data_private", "rater_key_final_v2.csv"),
+  show_col_types = FALSE
+) |>
+  dplyr::select(pair_id, institution_name) |>
+  dplyr::distinct()
+
+inst_tbl <- key_inst |>
+  dplyr::count(institution_name, name = "n_pairs") |>
+  dplyr::arrange(dplyr::desc(n_pairs))
+
+rm(key_inst)
+
+dplyr::bind_rows(
+  inst_tbl,
+  data.frame(institution_name = "**Total**", n_pairs = sum(inst_tbl$n_pairs))
+) |>
+  knitr::kable(
+    col.names = c("Institution", "Pairs (*n*)"),
+    caption   = "Number of matched pairs in the final 19-pair rater set, by institution.",
+    align     = c("l", "c")
+  ) |>
+  kableExtra::kable_styling(full_width = FALSE) |>
+  kableExtra::row_spec(nrow(inst_tbl) + 1L, bold = TRUE)
 ```
 
 # Import and format rater data
@@ -338,6 +376,8 @@ pairs_data <- analysis_data |>
 
 stopifnot(nrow(pairs_data) == 19)
 
+readr::write_csv(pairs_data, here::here("data", "data_processed", "pairs_data.csv"))
+
 ```
 
 ## Check normality
@@ -349,7 +389,7 @@ stopifnot(nrow(pairs_data) == 19)
 par(mfrow = c(1, 2))
 hist(pairs_data$D,
      main = "Paired differences",
-     xlab = "LDP \u2212 Comparator (mean FAIR score, 0\u20134 scale)")
+     xlab = "LDP − Comparator (mean FAIR score, 0–4 scale)")
 qqnorm(pairs_data$D); qqline(pairs_data$D, col = "red")
 par(mfrow = c(1, 1))
 
@@ -361,16 +401,60 @@ par(mfrow = c(1, 1))
 ```{r}
 #| label: pairs-plot
 #| 
+# Independent group means and 95% CIs (t-distribution, n - 1 df)
+# These are computed independently of the paired structure and offset
+# outward so they sit outside the paired data columns.
+group_ci <- analysis_data |>
+  dplyr::group_by(group) |>
+  dplyr::summarise(
+    n      = dplyr::n(),
+    mean   = mean(mean_score),
+    se     = sd(mean_score) / sqrt(dplyr::n()),
+    .groups = "drop"
+  ) |>
+  dplyr::mutate(
+    ci_lo = mean - qt(0.975, n - 1) * se,
+    ci_hi = mean + qt(0.975, n - 1) * se,
+    # LDP (position 1) offset left; Comparator (position 2) offset right
+    x_pos = dplyr::if_else(group == "LDP", 1 - 0.35, 2 + 0.35)
+  )
+
 analysis_data |>
   ggplot2::ggplot(ggplot2::aes(x = group, y = mean_score)) +
   ggplot2::geom_line(ggplot2::aes(group = pair_id), color = "grey") +
-  ggplot2::geom_point(shape = 1, size = 1.5) +
-  ggplot2::scale_x_discrete(limits = c("LDP", "Comparator")) +
+  ggplot2::geom_point(ggplot2::aes(fill = group),
+                      shape = 21, size = 2.5, stroke = 1.5) +
+  ggplot2::scale_fill_manual(
+    values = c(LDP = "#0072B2", Comparator = "#E69F00"),
+    guide  = "none"
+  ) +
+  # Independent group 95% CI error bars (offset outward)
+  ggplot2::geom_errorbar(
+    data         = group_ci,
+    ggplot2::aes(x = x_pos, ymin = ci_lo, ymax = ci_hi, colour = group),
+    width        = 0.12, linewidth = 1.0,
+    inherit.aes  = FALSE
+  ) +
+  # Independent group mean (solid square, consistent with other figures)
+  ggplot2::geom_point(
+    data         = group_ci,
+    ggplot2::aes(x = x_pos, y = mean, colour = group),
+    shape        = 15, size = 4,
+    inherit.aes  = FALSE
+  ) +
+  ggplot2::scale_colour_manual(
+    values = c(LDP = "#0072B2", Comparator = "#E69F00"),
+    guide  = "none"
+  ) +
+  # Wider expand to accommodate the outward-offset summary symbols
+  ggplot2::scale_x_discrete(limits = c("LDP", "Comparator"), expand = c(0, 0.5)) +
   ggplot2::labs(
     x = "Group",
-    y = "Mean FAIR compliance score (0\u20134)"
+    y = "Mean FAIR compliance score (0-4)"
   ) +
-  ggplot2::theme_bw()
+  ggplot2::theme_bw() +
+  # Optional: force a narrower aspect ratio
+  ggplot2::theme(aspect.ratio = 1.2)
 ```
 
 ## Conduct permutation test
@@ -390,9 +474,31 @@ perm_means <- replicate(n_perm, {
 
 p_perm <- mean(perm_means >= obs_mean)
 
-cat("=== PRIMARY: Permutation test (one-sided, n_perm = 1000) ===\n")
-cat(sprintf("  Observed mean paired difference = %.3f\n", obs_mean))
-cat(sprintf("  p-value                         = %.4f\n", p_perm))
+# 95% permutation CI: pivot the (symmetric) sign-flip null distribution
+# around the observed mean.  For any symmetric null F_0:
+#   CI = [obs_mean - Q_{0.975}(F_0),  obs_mean - Q_{0.025}(F_0)]
+ci_lower <- obs_mean - quantile(perm_means, 0.975)
+ci_upper <- obs_mean - quantile(perm_means, 0.025)
+
+data.frame(
+  Statistic = c("Observed mean paired difference (μ~D~, score units 0–4)",
+                "Permutation p-value (one-sided, n~perm~ = 1,000)",
+                "95% permutation CI for μ~D~, score units 0–4 (lower; upper)"),
+  Value     = c(sprintf("%.3f",        obs_mean),
+                sprintf("%.4f",        p_perm),
+                sprintf("%.3f ; %.3f", ci_lower, ci_upper))
+) |>
+  knitr::kable(
+    col.names = c("Statistic", "Value"),
+    caption   = paste0(
+      "Table 1. Primary analysis: permutation test results ",
+      "(one-sided, seed = 20260329, n~perm~ = 1,000). ",
+      "The 95% CI is derived by pivoting the sign-flip null distribution ",
+      "around the observed mean difference (pivot method; equivalent to a ",
+      "two-sided 95% interval consistent with the same permutation framework)."
+    )
+  ) |>
+  kableExtra::kable_styling(full_width = FALSE)
 ```
 
 ## Supplementary paired t-test
@@ -400,14 +506,479 @@ cat(sprintf("  p-value                         = %.4f\n", p_perm))
 ```{r}
 #| label: paired-ttest
 
-#   Paired t-test (SECONDARY)
-cat("\n=== SECONDARY: One-sided paired t-test ===\n")
+# Secondary: one-sided paired t-test
 t_result <- t.test(pairs_data$D, alternative = "greater", mu = 0)
-print(t_result)
 
-# --- Step 7: Effect size (Cohen's d) ---
-cat("\n=== Effect size ===\n")
-effectsize::cohens_d(pairs_data$D, alternative = "greater")
+# Effect size: Cohen's d (d_z for paired design)
+cd       <- effectsize::cohens_d(pairs_data$D, alternative = "greater")
+
+data.frame(
+  Statistic = c(
+    "Mean paired difference (score units 0–4)",
+    "t statistic",
+    "Degrees of freedom",
+    "p-value (one-sided)",
+    "95% CI lower bound (one-sided)",
+    "Cohen's d (d~z~)",
+    "Cohen's d 95% CI lower bound (one-sided)"
+  ),
+  Value = c(
+    sprintf("%.3f",  t_result$estimate),
+    sprintf("%.3f",  t_result$statistic),
+    sprintf("%.0f",  t_result$parameter),
+    sprintf("%.4f",  t_result$p.value),
+    sprintf("%.3f",  t_result$conf.int[1]),
+    sprintf("%.3f",  cd$Cohens_d),
+    sprintf("%.3f",  cd$CI_low)
+  )
+) |>
+  knitr::kable(
+    col.names = c("Statistic", "Value"),
+    caption   = "Table 2. Secondary analysis: one-sided paired t-test and effect size (α = 0.05)."
+  ) |>
+  kableExtra::kable_styling(full_width = FALSE)
+```
+
+# Planned sensitivity analysis
+
+## Repeated random pairing (robustness check)
+
+The primary analysis used a single pre-specified random pairing of LDP and comparator publications within each institution × publication-year stratum (seed = 20260329). This check addresses whether the p-value conclusion is sensitive to *which specific* LDP publication happened to be matched to *which specific* comparator within strata containing more than one eligible pair. The primary one-sided paired t-test is repeated across 100 random pairings (the original seed plus 99 alternatives). Importantly, the mean paired difference is invariant to pairing choices — it equals the difference of group means regardless of how pairs are formed — so variation across pairings reflects sensitivity of the variance estimate only, not of the mean effect.
+
+```{r}
+#| label: rrp-setup
+#| echo: false
+#| cache: false
+
+# Read private key for institution and publication-year stratification
+scored_data_rrp <- readr::read_csv(
+  here::here("data", "data_raw", "data_private", "rater_key_final_v2.csv"),
+  show_col_types = FALSE
+) |>
+  dplyr::select(pub_id, institution_name, publication_year, group) |>
+  dplyr::inner_join(scores_mean, by = "pub_id")
+```
+
+```{r}
+#| label: rrp-run
+
+# Re-pair within strata using a given seed, run one-sided paired t-test
+one_pairing <- function(data, seed) {
+  set.seed(seed)
+  strata <- dplyr::distinct(data, institution_name, publication_year)
+
+  pairs_D <- purrr::map_dfr(seq_len(nrow(strata)), function(i) {
+    ldp_sc <- data |>
+      dplyr::filter(institution_name == strata$institution_name[i],
+                    publication_year  == strata$publication_year[i],
+                    group == "LDP") |>
+      dplyr::pull(mean_score)
+    comp_sc <- data |>
+      dplyr::filter(institution_name == strata$institution_name[i],
+                    publication_year  == strata$publication_year[i],
+                    group == "Comparator") |>
+      dplyr::pull(mean_score)
+    comp_sc <- sample(comp_sc)   # randomly permute comparator assignment within stratum
+    n       <- min(length(ldp_sc), length(comp_sc))
+    data.frame(D = ldp_sc[seq_len(n)] - comp_sc[seq_len(n)])
+  })
+
+  t_res <- t.test(pairs_D$D, alternative = "greater", mu = 0)
+  data.frame(
+    seed   = seed,
+    t_stat = as.numeric(t_res$statistic),
+    p_val  = t_res$p.value,
+    mean_D = as.numeric(t_res$estimate)
+  )
+}
+
+# Original seed plus 99 consecutive seeds
+seeds_rrp   <- c(20260329L, 20260329L + seq_len(99))
+rrp_results <- purrr::map_dfr(seeds_rrp, \(s) one_pairing(scored_data_rrp, s))
+```
+
+```{r}
+#| label: tbl-rrp-summary
+
+data.frame(
+  Item = c(
+    "Number of pairings evaluated",
+    "Mean paired difference (invariant across pairings)",
+    "Median t-statistic",
+    "Range of t-statistics (min – max)",
+    "Proportion of pairings with one-sided p < 0.05"
+  ),
+  Value = c(
+    sprintf("%d", nrow(rrp_results)),
+    sprintf("%.3f", mean(rrp_results$mean_D)),
+    sprintf("%.3f", median(rrp_results$t_stat)),
+    sprintf("%.3f – %.3f", min(rrp_results$t_stat), max(rrp_results$t_stat)),
+    sprintf("%d / %d (%.1f%%)",
+            sum(rrp_results$p_val < 0.05), nrow(rrp_results),
+            100 * mean(rrp_results$p_val < 0.05))
+  )
+) |>
+  knitr::kable(
+    col.names = c("Item", "Value"),
+    caption   = "Table S3. Repeated random pairing robustness check: summary across 100 pairings (seeds 20260329–20260428)."
+  ) |>
+  kableExtra::kable_styling(full_width = FALSE)
+```
+
+```{r}
+#| label: fig-rrp-tdist
+#| fig-cap: "Distribution of t-statistics across 100 random pairings. The dashed blue line marks the t-statistic from the pre-registered pairing (seed = 20260329). The solid red line marks the one-sided critical value at α = 0.05 (df = 18)."
+
+t_crit_rrp <- qt(0.95, df = 18)
+t_orig_rrp <- rrp_results$t_stat[rrp_results$seed == 20260329L]
+
+ggplot2::ggplot(rrp_results, ggplot2::aes(x = t_stat)) +
+  ggplot2::geom_histogram(bins = 20, fill = "#D6EAF8", colour = "white") +
+  ggplot2::geom_vline(xintercept = t_orig_rrp,  linetype = "dashed",
+                      colour = "#1A5276", linewidth = 0.8) +
+  ggplot2::geom_vline(xintercept = t_crit_rrp, linetype = "solid",
+                      colour = "#A93226", linewidth = 0.8) +
+  ggplot2::annotate("text", x = t_orig_rrp - 0.05, y = Inf,
+                    label = "Pre-registered\npairing",
+                    hjust = 1, vjust = 1.5, colour = "#1A5276", size = 3) +
+  ggplot2::annotate("text", x = t_crit_rrp + 0.05, y = Inf,
+                    label = "t critical\n(α = 0.05)",
+                    hjust = 0, vjust = 1.5, colour = "#A93226", size = 3) +
+  ggplot2::labs(x = "t statistic", y = "Count") +
+  ggplot2::theme_bw()
+```
+
+# Pre-planned exploratory analyses
+
+All analyses in this section are pre-specified as exploratory (not confirmatory). Results are clearly labelled as exploratory and should not be interpreted as tests of the primary hypothesis.
+
+## FAIR component breakdown
+
+Separate group comparisons for each of the four FAIR letter scores (Findable, Accessible, Interoperable, Reusable) and for the two Reusable sub-components (Documentation: file formats + collection protocols + scripted processing + variables described, max = 0.8; and Licensing, max = 0.2).
+
+```{r}
+#| label: comp-setup
+
+# Standardised component column mappings per rater
+comp_map <- list(
+  JP = c(F      = "Findable (1, 0.5, 0)",
+         A      = "Accessible (1, 0)",
+         I      = "Interoperable (1, 0)",
+         R_ff   = "Reusable_ff (0.2, 0)",
+         R_coll = "Reusable_coll (0.2, 0)",
+         R_proc = "Reusable_process (0.2, 0)",
+         R_vars = "Reusable_vars (0.2, 0)",
+         R_lic  = "License (0.2, 0)"),
+  DH = c(F      = "F",
+         A      = "A",
+         I      = "I",
+         R_ff   = "R-formats",
+         R_coll = "R protocols",
+         R_proc = "R script",
+         R_vars = "R variables",
+         R_lic  = "R License"),
+  JR = c(F      = "Findable",
+         A      = "Accessible",
+         I      = "Interoperable",
+         R_ff   = "Reusable_File formats are identified",
+         R_coll = "Reusable: Collection protocols are noted",
+         R_proc = "Reusable: Includes scripted data processing",
+         R_vars = "Reusable: Variables are fulsomely described",
+         R_lic  = "Reusable: A publicly sourced license is attached, or a bespoke license is included with a lay summary"),
+  SE = c(F      = "F-Score",
+         A      = "A-score",
+         I      = "I-score",
+         R_ff   = "R_fileformats",
+         R_coll = "R_collectionprotocols",
+         R_proc = "R_scriptedprocessing",
+         R_vars = "R_variables",
+         R_lic  = "R_license")
+)
+
+# Stack component scores across all 4 raters, using standardised names
+comp_long <- purrr::imap_dfr(comp_map, function(col_map, rater) {
+  raw[[rater]] |>
+    dplyr::filter(pub_id %in% ids_common) |>
+    dplyr::select(pub_id, dplyr::all_of(unname(col_map))) |>
+    dplyr::rename(!!!setNames(unname(col_map), names(col_map))) |>
+    dplyr::mutate(rater = rater)
+})
+
+# Mean component scores per publication (averaged across 4 raters)
+comp_pub <- comp_long |>
+  dplyr::group_by(pub_id) |>
+  dplyr::summarise(
+    F     = mean(F,                               na.rm = TRUE),
+    A     = mean(A,                               na.rm = TRUE),
+    I     = mean(I,                               na.rm = TRUE),
+    R_doc = mean(R_ff + R_coll + R_proc + R_vars, na.rm = TRUE),
+    R_lic = mean(R_lic,                           na.rm = TRUE),
+    R     = mean(R_ff + R_coll + R_proc + R_vars + R_lic, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# Join with pairing lookup
+comp_pairs <- key |>
+  dplyr::inner_join(comp_pub, by = "pub_id") |>
+  dplyr::select(pair_id, group, F, A, I, R_doc, R_lic, R)
+```
+
+```{r}
+#| label: tbl-comp-breakdown
+
+components <- c(F     = "Findable (max = 1)",
+                A     = "Accessible (max = 1)",
+                I     = "Interoperable (max = 1)",
+                R     = "Reusable — total (max = 1)",
+                R_doc = "Reusable — Documentation (max = 0.8)",
+                R_lic = "Reusable — Licensing (max = 0.2)")
+
+comp_summary <- purrr::map_dfr(names(components), function(comp) {
+  wide <- comp_pairs |>
+    dplyr::transmute(pair_id, group, score = .data[[comp]]) |>
+    tidyr::pivot_wider(names_from = group, values_from = score) |>
+    dplyr::mutate(D = LDP - Comparator)
+
+  data.frame(
+    Component    = components[[comp]],
+    `Mean LDP`   = round(mean(wide$LDP,         na.rm = TRUE), 3),
+    `Mean Comp.` = round(mean(wide$Comparator,  na.rm = TRUE), 3),
+    `Mean D`     = round(mean(wide$D,            na.rm = TRUE), 3),
+    check.names  = FALSE
+  )
+})
+
+knitr::kable(
+  comp_summary,
+  col.names = c("Component", "Mean LDP", "Mean Comparator", "Mean diff. (LDP − Comp.)"),
+  align     = c("l", "c", "c", "c"),
+  caption   = "Table S4. Exploratory FAIR component breakdown: mean scores by group and mean within-pair difference (n = 19 pairs, 4 raters). Results are exploratory; no multiplicity correction applied."
+) |>
+  kableExtra::kable_styling(full_width = FALSE) |>
+  kableExtra::footnote(
+    general      = "Reusable — Documentation = file formats + collection protocols + scripted processing + variables described. Reusable — Licensing = publicly sourced or bespoke licence with lay summary.",
+    general_title = ""
+  )
+```
+
+```{r}
+#| label: fig-comp-breakdown
+#| fig-cap: "Exploratory FAIR component breakdown: scores by group for each component. Individual publication scores are shown as jittered points; solid squares show group means; error bars show ±1 SE. Colours use the Okabe-Ito palette."
+
+comp_plot_data <- comp_pairs |>
+  dplyr::select(pair_id, group, F, A, I, R, R_doc, R_lic) |>
+  tidyr::pivot_longer(cols = c(F, A, I, R, R_doc, R_lic),
+                      names_to = "component", values_to = "score") |>
+  dplyr::mutate(
+    component = factor(component,
+      levels = c("F", "A", "I", "R", "R_doc", "R_lic"),
+      labels = c("Findable", "Accessible", "Interoperable",
+                 "Reusable\n(total)", "Reusable\n(Doc.)", "Reusable\n(Lic.)")),
+    group = factor(group, levels = c("LDP", "Comparator"))
+  )
+
+# Summary statistics for bars and error bars
+comp_summary_plot <- comp_plot_data |>
+  dplyr::group_by(group, component) |>
+  dplyr::summarise(mean_score = mean(score, na.rm = TRUE),
+                   se_score   = sd(score,  na.rm = TRUE) / sqrt(dplyr::n()),
+                   .groups = "drop")
+
+# Okabe-Ito colourblind-safe palette
+cb_cols <- c(LDP = "#0072B2", Comparator = "#E69F00")
+
+dodge_w <- 0.7
+
+ggplot2::ggplot() +
+  # Individual data points
+  ggplot2::geom_point(
+    data     = comp_plot_data,
+    ggplot2::aes(x = component, y = score, colour = group),
+    position = ggplot2::position_jitterdodge(
+                 jitter.width = 0.17, dodge.width = dodge_w),
+    shape = 21, size = 1.8, alpha = 0.7, stroke = 1.2) +
+  # Error bars
+  ggplot2::geom_errorbar(
+    data     = comp_summary_plot,
+    ggplot2::aes(x = component, group = group,
+                 ymin = mean_score - se_score,
+                 ymax = mean_score + se_score),
+    position = ggplot2::position_dodge(dodge_w),
+    width = 0.2, linewidth = 0.6, colour = "grey30") +
+  # Mean — solid square on top
+  ggplot2::geom_point(
+    data     = comp_summary_plot,
+    ggplot2::aes(x = component, y = mean_score, colour = group),
+    position = ggplot2::position_dodge(dodge_w),
+    shape = 15, size = 4) +
+  ggplot2::scale_colour_manual(values = cb_cols) +
+  ggplot2::scale_y_continuous(limits = c(NA, 1.05),
+                               expand = ggplot2::expansion(mult = 0, add = c(0.04, 0))) +
+  ggplot2::labs(x = NULL, y = "Score", colour = NULL) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "top")
+```
+
+```{r}
+#| label: fig-comp-main
+#| fig-cap: "Exploratory FAIR component breakdown (four main categories): scores by group for Findable, Accessible, Interoperable, and Reusable. Individual publication scores are shown as jittered points; solid squares show group means; error bars show ±1 SE. Colours use the Okabe-Ito palette."
+
+# Filter to four main FAIR categories only
+comp_plot_data_main <- comp_pairs |>
+  dplyr::select(pair_id, group, F, A, I, R) |>
+  tidyr::pivot_longer(cols = c(F, A, I, R),
+                      names_to = "component", values_to = "score") |>
+  dplyr::mutate(
+    component = factor(component,
+      levels = c("F", "A", "I", "R"),
+      labels = c("Findable", "Accessible", "Interoperable", "Reusable")),
+    group = factor(group, levels = c("LDP", "Comparator"))
+  )
+
+# Summary statistics for bars and error bars
+comp_summary_main <- comp_plot_data_main |>
+  dplyr::group_by(group, component) |>
+  dplyr::summarise(mean_score = mean(score, na.rm = TRUE),
+                   se_score   = sd(score,  na.rm = TRUE) / sqrt(dplyr::n()),
+                   .groups = "drop")
+
+cb_cols <- c(LDP = "#0072B2", Comparator = "#E69F00")
+dodge_w <- 0.7
+
+ggplot2::ggplot() +
+  # Individual data points
+  ggplot2::geom_point(
+    data     = comp_plot_data_main,
+    ggplot2::aes(x = component, y = score, colour = group),
+    position = ggplot2::position_jitterdodge(
+                 jitter.width = 0.17, dodge.width = dodge_w),
+    shape = 21, size = 1.8, alpha = 0.7, stroke = 1.2) +
+  # Error bars
+  ggplot2::geom_errorbar(
+    data     = comp_summary_main,
+    ggplot2::aes(x = component, group = group,
+                 ymin = mean_score - se_score,
+                 ymax = mean_score + se_score),
+    position = ggplot2::position_dodge(dodge_w),
+    width = 0.2, linewidth = 0.6, colour = "grey30") +
+  # Mean — solid square on top
+  ggplot2::geom_point(
+    data     = comp_summary_main,
+    ggplot2::aes(x = component, y = mean_score, colour = group),
+    position = ggplot2::position_dodge(dodge_w),
+    shape = 15, size = 4) +
+  ggplot2::scale_colour_manual(values = cb_cols) +
+  ggplot2::scale_y_continuous(limits = c(NA, 1.05),
+                               expand = ggplot2::expansion(mult = 0, add = c(0.04, 0))) +
+  ggplot2::labs(x = NULL, y = "Score", colour = NULL) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "top")
+```
+
+## Institution-level subgroup analysis
+
+Within-institution group comparisons for the two largest institution groups (UBC: n = 11 pairs; McGill: n = 6 pairs). University of Regina (n = 1) and University of Manitoba (n = 1) are omitted as single-pair subgroups cannot support a permutation test. Results are exploratory; sample sizes within each institution are small and power is limited.
+
+```{r}
+#| label: inst-subgroup-setup
+#| echo: false
+#| cache: false
+
+# Read private key to obtain institution affiliation
+inst_key <- readr::read_csv(
+  here::here("data", "data_raw", "data_private", "rater_key_final_v2.csv"),
+  show_col_types = FALSE
+) |>
+  dplyr::select(pub_id, pair_id, institution_name) |>
+  dplyr::distinct()
+
+analysis_data_inst <- analysis_data |>
+  dplyr::left_join(inst_key, by = c("pub_id", "pair_id"))
+
+rm(inst_key)
+```
+
+```{r}
+#| label: tbl-inst-subgroup
+
+run_inst_test <- function(data, institution, n_perm = 10000L, seed = 20260329L) {
+  sub <- data |>
+    dplyr::filter(institution_name == institution) |>
+    dplyr::select(pair_id, group, mean_score) |>
+    tidyr::pivot_wider(names_from = group, values_from = mean_score) |>
+    dplyr::mutate(D = LDP - Comparator)
+
+  set.seed(seed)
+  obs_m   <- mean(sub$D)
+  perm_m  <- replicate(n_perm, {
+    signs <- sample(c(-1L, 1L), nrow(sub), replace = TRUE)
+    mean(sub$D * signs)
+  })
+
+  data.frame(
+    Institution  = institution,
+    `n pairs`    = nrow(sub),
+    `Mean LDP`   = round(mean(sub$LDP,         na.rm = TRUE), 3),
+    `Mean Comp.` = round(mean(sub$Comparator,  na.rm = TRUE), 3),
+    `Mean D`     = round(obs_m, 3),
+    `Perm. p`    = round(mean(perm_m >= obs_m), 4),
+    check.names  = FALSE
+  )
+}
+
+dplyr::bind_rows(
+  run_inst_test(analysis_data_inst, "University of British Columbia"),
+  run_inst_test(analysis_data_inst, "McGill University")
+) |>
+  knitr::kable(
+    col.names = c("Institution", "n pairs", "Mean LDP", "Mean Comparator",
+                  "Mean D (LDP − Comp.)", "Permutation p (one-sided)"),
+    align     = c("l", "c", "c", "c", "c", "c"),
+    caption   = "Table S5. Exploratory institution-level subgroup analysis (UBC and McGill only). Permutation test: n~perm~ = 10,000, seed = 20260329. Results are exploratory."
+  ) |>
+  kableExtra::kable_styling(full_width = FALSE) |>
+  kableExtra::footnote(
+    general       = "Power within each institution is low. University of Regina (n = 1 pair) and University of Manitoba (n = 1 pair) omitted.",
+    general_title = ""
+  )
+```
+
+## Score distribution visualization
+
+```{r}
+#| label: fig-score-dist
+#| fig-cap: "Exploratory score distribution: mean FAIR compliance scores (0–4) by group across all 38 publications. Points are jittered for visibility; crossbars show group means. Colours use the Okabe-Ito palette."
+
+ggplot2::ggplot(analysis_data,
+                ggplot2::aes(x = group, y = mean_score, colour = group)) +
+  ggplot2::geom_jitter(width = 0.08, height = 0, size = 2.5, alpha = 0.7) +
+  ggplot2::stat_summary(fun = mean, geom = "crossbar",
+                        width = 0.3, linewidth = 0.8, middle.linewidth = 1) +
+  ggplot2::scale_colour_manual(
+    values = c(LDP = "#0072B2", Comparator = "#E69F00")) +
+  ggplot2::scale_x_discrete(limits = c("LDP", "Comparator")) +
+  ggplot2::labs(x = NULL, y = "Mean FAIR compliance score (0–4)") +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "none")
+```
+
+```{r}
+#| label: fig-diff-dist
+#| fig-cap: "Exploratory paired difference distribution: within-pair differences D = LDP − Comparator across 19 matched pairs. The dashed line marks D = 0; the solid line marks the observed mean difference."
+
+ggplot2::ggplot(pairs_data, ggplot2::aes(x = D)) +
+  ggplot2::geom_histogram(bins = 10, fill = "#D6EAF8", colour = "white") +
+  ggplot2::geom_vline(xintercept = 0,
+                      linetype = "dashed", colour = "grey40", linewidth = 0.8) +
+  ggplot2::geom_vline(xintercept = mean(pairs_data$D),
+                      linetype = "solid",  colour = "#1A5276", linewidth = 0.8) +
+  ggplot2::annotate("text",
+                    x = mean(pairs_data$D) + 0.05, y = Inf,
+                    label = sprintf("Mean D = %.3f", mean(pairs_data$D)),
+                    hjust = 0, vjust = 1.5, colour = "#1A5276", size = 3.5) +
+  ggplot2::labs(x = "Paired difference D (LDP − Comparator, mean FAIR score)",
+                y = "Count") +
+  ggplot2::theme_bw()
 ```
 
 # Sensitivity analysis: leave-one-rater-out
@@ -513,10 +1084,802 @@ influence_tbl |>
   knitr::kable(
     col.names = c(
       "Excluded rater",
-      "\u0394 ICC", "\u0394 Mean paired diff.", "\u0394 Permutation p",
+      "Δ ICC", "Δ Mean paired diff.", "Δ Permutation p",
       "Composite influence"
     ),
-    caption = "Table S2. Change from four-rater baseline for each leave-one-out run. Positive \u0394 ICC: reliability improves without that rater. Positive \u0394 permutation p: result is less significant without that rater. Composite influence is the mean of the three normalised absolute deviations (range 0\u20131; higher = more influential)."
+    caption = "Table S2. Change from four-rater baseline for each leave-one-out run. Positive Δ ICC: reliability improves without that rater. Positive Δ permutation p: result is less significant without that rater. Composite influence is the mean of the three normalised absolute deviations (range 0–1; higher = more influential)."
   )
 ```
 
+# Variability assumptions: assumed vs. observed values
+
+The pre-registered power analysis (`updated_power_analysis.qmd` in the
+`LDP_find-articles` repository) assumed a range of within-pair difference standard
+deviations (σ~D~ = 0.50–1.50) and also parameterised the relationship between σ~D~,
+individual rater score variability (σ), and inter-rater reliability (ICC). This
+section compares those design-stage assumptions against the values actually observed
+in the data to assess how well the variability was anticipated.
+
+## Observed variability quantities
+
+```{r}
+#| label: observed-values
+
+n_pairs <- nrow(pairs_data)
+
+# Observed within-pair difference SD
+obs_sd_D <- sd(pairs_data$D)
+
+# Individual rater score SD across all 38 publications (pooled across raters)
+obs_sigma <- sd(as.vector(as.matrix(scores_wide[, rater_cols])))
+
+# Observed ICC (average measures, from icc_result computed earlier)
+obs_icc <- icc_result$value
+
+# Implied sigma_D from the variance-components formula:
+#   sigma_D = sigma * sqrt(2) * sqrt(ICC + (1 - ICC) / k)
+k            <- length(rater_cols)
+implied_sd_D <- obs_sigma * sqrt(2) * sqrt(obs_icc + (1 - obs_icc) / k)
+
+data.frame(
+  Quantity = c(
+    "Number of matched pairs (*n*)",
+    "SD of paired differences, σ~D~ (directly observed)",
+    "Individual rater score SD, σ (pooled across raters and publications, scale 0–4)",
+    "Observed ICC (two-way mixed, absolute agreement, average of k = 4 raters)",
+    "Formula-implied σ~D~ = σ·√2·√[ICC + (1−ICC)/k]"
+  ),
+  Value = c(
+    sprintf("%d",   n_pairs),
+    sprintf("%.3f", obs_sd_D),
+    sprintf("%.3f", obs_sigma),
+    sprintf("%.3f", obs_icc),
+    sprintf("%.3f", implied_sd_D)
+  )
+) |>
+  knitr::kable(
+    col.names = c("Quantity", "Observed value"),
+    caption   = "Table 3. Observed variability parameters."
+  ) |>
+  kableExtra::kable_styling(full_width = FALSE)
+```
+
+## Assumed vs. observed σ~D~
+
+The power analysis evaluated σ~D~ values ranging from 0.50 to 1.50. The table below
+places the observed σ~D~ alongside those assumed values.
+
+```{r}
+#| label: tbl-sigma-comparison
+
+assumed_sd_D <- c(0.50, 0.75, 1.00, 1.25, 1.50)
+
+comp_df <- data.frame(
+  `σ_D`    = c(assumed_sd_D, obs_sd_D),
+  `Source` = c(rep("Assumed (power analysis)", length(assumed_sd_D)),
+               "Observed (this dataset)"),
+  check.names = FALSE
+)
+
+knitr::kable(
+  comp_df,
+  col.names = c("σ~D~", "Source"),
+  align     = c("c", "l"),
+  caption   = sprintf(
+    paste0(
+      "Table 4. Assumed σ_D values from the pre-registered power analysis ",
+      "alongside the observed σ_D = %.3f (bold, highlighted). ",
+      "The observed value falls %s the assumed range (%.2f–%.2f)."
+    ),
+    obs_sd_D,
+    ifelse(obs_sd_D < min(assumed_sd_D), "below",
+           ifelse(obs_sd_D > max(assumed_sd_D), "above", "within")),
+    min(assumed_sd_D), max(assumed_sd_D)
+  )
+) |>
+  kableExtra::kable_styling(full_width = FALSE) |>
+  kableExtra::row_spec(nrow(comp_df), bold = TRUE, background = "#D6EAF8")
+```
+
+## Observed σ~D~ in the context of the ICC × σ grid
+
+The power analysis (Section C of `updated_power_analysis.qmd`) showed how σ~D~
+depends on the single-rater score SD (σ) and ICC via:
+
+$$\sigma_D = \sigma \cdot \sqrt{2} \cdot \sqrt{\text{ICC} + \frac{1-\text{ICC}}{k}}$$
+
+The table below reproduces that grid and highlights the cell closest to the observed
+(σ, ICC) combination, making it easy to see which assumed σ~D~ value best matched
+the actual data-generating process.
+
+```{r}
+#| label: tbl-icc-grid
+#| tbl-cap: !expr >
+#|   sprintf(
+#|     "Implied σ_D (SD of within-pair differences) for combinations of
+#|      single-rater score SD (σ) and ICC (k = 4 raters). Cell values are σ_D.
+#|      The grid cell closest to the observed (σ = %.3f, ICC = %.3f) 
+#|      is highlighted in blue (formula-implied σ_D = %.3f;
+#|      directly observed σ_D = %.3f).",
+#|     obs_sigma, obs_icc, implied_sd_D, obs_sd_D
+#|   )
+
+sigma_vals <- c(0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8)
+icc_vals   <- c(0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95)
+
+grid_mat <- outer(sigma_vals, icc_vals, FUN = function(s, icc)
+  round(s * sqrt(2) * sqrt(icc + (1 - icc) / k), 3)
+)
+rownames(grid_mat) <- paste0("σ = ", sigma_vals)
+colnames(grid_mat) <- paste0("ICC = ", icc_vals)
+
+# Find grid cell closest to observed (sigma, ICC)
+closest_sigma_idx <- which.min(abs(sigma_vals - obs_sigma))
+closest_icc_idx   <- which.min(abs(icc_vals   - obs_icc))
+
+grid_df <- as.data.frame(grid_mat)
+grid_df <- cbind(`Single-rater SD (σ)` = rownames(grid_df), grid_df)
+rownames(grid_df) <- NULL
+
+# Vectorised background: highlight only the intersection row within the closest ICC column
+bg_vec   <- ifelse(seq_len(nrow(grid_df)) == closest_sigma_idx, "#D6EAF8", "white")
+bold_vec <- seq_len(nrow(grid_df)) == closest_sigma_idx
+
+knitr::kable(grid_df, align = c("l", rep("c", length(icc_vals)))) |>
+  kableExtra::kable_styling(full_width = FALSE) |>
+  kableExtra::column_spec(
+    closest_icc_idx + 1,   # +1 for the row-label column
+    background = bg_vec,
+    bold       = bold_vec
+  ) |>
+  kableExtra::footnote(
+    general = sprintf(
+      paste0(
+        "Cell values are σ_D (SD of within-pair differences in mean FAIR scores). ",
+        "Observed: σ = %.3f, ICC = %.3f, ",
+        "formula-implied σ_D = %.3f, directly observed σ_D = %.3f. ",
+        "The closest grid cell (bold, blue) is at σ = %.1f, ICC = %.2f."
+      ),
+      obs_sigma, obs_icc, implied_sd_D, obs_sd_D,
+      sigma_vals[closest_sigma_idx], icc_vals[closest_icc_idx]
+    ),
+    general_title = ""
+  )
+```
+
+# Unplanned exploratory analyses
+
+All analyses in this section were not pre-specified. Results are descriptive only and should not be interpreted as confirmatory tests of the primary hypothesis.
+
+## Journal data sharing policies
+
+This section examines whether LDP and Comparator publications appeared in journals with systematically different data sharing requirements — a potential confound in the primary analysis. Journal name, ISSN, and publisher are retrieved from the CrossRef REST API for each publication DOI and matched to the [Transparency and Openness Promotion (TOP) Factor database](https://topfactor.org/) by ISSN. The primary metric is the **Data Transparency** score (TOP Factor standard 2): 0 = no mention; 1 = disclosure required; 2 = sharing required; 3 = sharing + independent verification.
+
+CrossRef results are cached at `data/data_processed/crossref_journal_cache.rds`; delete that file to force a fresh API query.
+
+### Load data
+
+```{r}
+#| label: jp-load-pubs
+#| cache: false
+
+pubs_jp <- readr::read_csv(
+  here::here("..", "LDP_find-articles", "data", "processed_data", "rater_publications_final_v2.csv"),
+  show_col_types = FALSE
+)
+```
+
+```{r}
+#| label: jp-crossref-query
+#| cache: false
+
+fetch_crossref <- function(doi_raw, mailto = "pitherj@gmail.com") {
+  doi <- sub("^https?://doi\\.org/", "", doi_raw, perl = TRUE)
+  url <- paste0(
+    "https://api.crossref.org/works/",
+    utils::URLencode(doi, repeated = TRUE),
+    "?mailto=", mailto
+  )
+  tryCatch({
+    raw_cr <- jsonlite::fromJSON(url, simplifyVector = FALSE)
+    if (!identical(raw_cr[["status"]], "ok")) stop("status not ok")
+    msg <- raw_cr[["message"]]
+    list(
+      journal   = if (length(msg[["container-title"]]) > 0)
+                    as.character(msg[["container-title"]][[1]])
+                  else NA_character_,
+      issns     = if (length(msg[["ISSN"]]) > 0)
+                    as.character(unlist(msg[["ISSN"]]))
+                  else character(0),
+      publisher = if (!is.null(msg[["publisher"]]))
+                    as.character(msg[["publisher"]])
+                  else NA_character_
+    )
+  }, error = function(e) {
+    list(journal = NA_character_, issns = character(0), publisher = NA_character_)
+  })
+}
+
+cache_file_jp <- here::here("data", "data_processed", "crossref_journal_cache.rds")
+
+if (file.exists(cache_file_jp)) {
+  cr_results <- readRDS(cache_file_jp)
+} else {
+  cr_results <- setNames(vector("list", nrow(pubs_jp)), pubs_jp$pub_id)
+  for (i in seq_len(nrow(pubs_jp))) {
+    cr_results[[pubs_jp$pub_id[i]]] <- fetch_crossref(pubs_jp$doi[i])
+    Sys.sleep(0.5)   # polite rate-limiting
+  }
+  saveRDS(cr_results, cache_file_jp)
+}
+```
+
+```{r}
+#| label: jp-build-tables
+
+# Per-publication CrossRef metadata
+pub_meta_jp <- pubs_jp |>
+  dplyr::mutate(
+    journal   = sapply(pub_id, function(id) {
+                  x <- cr_results[[id]]$journal
+                  if (is.null(x) || length(x) == 0) NA_character_ else as.character(x[[1]])
+                }),
+    publisher = sapply(pub_id, function(id) {
+                  x <- cr_results[[id]]$publisher
+                  if (is.null(x) || length(x) == 0) NA_character_ else as.character(x[[1]])
+                }),
+    issn_str  = sapply(pub_id, function(id) {
+                  x <- cr_results[[id]]$issns
+                  if (length(x) == 0) NA_character_ else paste(x, collapse = "; ")
+                }),
+    issns     = lapply(pub_id, function(id) cr_results[[id]]$issns)
+  ) |>
+  dplyr::select(pub_id, doi, publication_year, journal, issn_str, publisher, issns)
+
+# TOP Factor database
+top_raw_jp <- readr::read_csv(here::here("data", "data_raw", "top-factor.csv"), show_col_types = FALSE)
+names(top_raw_jp)[1] <- "Journal"
+
+top_jp <- top_raw_jp |>
+  dplyr::select(
+    journal_top   = Journal,
+    issn          = Issn,
+    eissn         = Eissn,
+    publisher_top = Publisher,
+    guideline_url = `Author guideline url`,
+    data_citation = `Data citation score`,
+    data_transp   = `Data transparency score`,
+    total_score   = Total
+  ) |>
+  dplyr::mutate(
+    issn          = dplyr::na_if(stringr::str_trim(issn),  ""),
+    eissn         = dplyr::na_if(stringr::str_trim(eissn), ""),
+    data_citation = suppressWarnings(as.integer(data_citation)),
+    data_transp   = suppressWarnings(as.integer(data_transp)),
+    total_score   = suppressWarnings(as.integer(total_score))
+  )
+```
+
+### Match publications to TOP Factor
+
+```{r}
+#| label: jp-match-top
+
+lookup_top <- function(issns, top_df) {
+  if (length(issns) == 0) return(NULL)
+  for (issn in issns) {
+    idx <- which(!is.na(top_df$issn)  & top_df$issn  == issn)
+    if (length(idx) == 0)
+      idx <- which(!is.na(top_df$eissn) & top_df$eissn == issn)
+    if (length(idx) > 0) return(top_df[idx[1], ])
+  }
+  NULL
+}
+
+top_cols_jp <- c("journal_top", "publisher_top", "guideline_url",
+                 "data_citation", "data_transp", "total_score")
+
+matched_rows_jp <- lapply(seq_len(nrow(pub_meta_jp)), function(i) {
+  hit <- lookup_top(pub_meta_jp$issns[[i]], top_jp)
+  if (is.null(hit)) {
+    as.data.frame(setNames(replicate(length(top_cols_jp), NA, simplify = FALSE), top_cols_jp))
+  } else {
+    as.data.frame(hit[, top_cols_jp])
+  }
+})
+
+top_match_jp <- do.call(rbind, matched_rows_jp) |>
+  dplyr::mutate(matched = !is.na(journal_top))
+
+pub_full_jp <- dplyr::bind_cols(
+  pub_meta_jp |> dplyr::select(-issns),
+  top_match_jp
+)
+
+n_pubs_jp     <- nrow(pub_full_jp)
+n_matched_jp  <- sum(pub_full_jp$matched)
+n_uniq_jp     <- dplyr::n_distinct(pub_full_jp$journal, na.rm = TRUE)
+n_uniq_mat_jp <- pub_full_jp |> dplyr::filter(matched) |> dplyr::distinct(journal) |> nrow()
+```
+
+Of the `r n_pubs_jp` publications, **`r n_matched_jp`** (`r round(100*n_matched_jp/n_pubs_jp)`%) matched an entry in the TOP Factor database. The `r n_pubs_jp` publications represent **`r n_uniq_jp` unique journals**, of which **`r n_uniq_mat_jp`** are matched.
+
+### Table S6 — Unique journals with TOP Factor scores
+
+```{r}
+#| label: tbl-jp-unique-journals
+#| tbl-cap: "Unique journals in the LDP publication set with TOP Factor scores. Score scale: 0 = no mention; 1 = disclosure required; 2 = sharing required; 3 = sharing + verification. N pubs = count of the 38 publications from that journal. Rows shaded grey were not found in the TOP database."
+
+pub_counts_jp <- pub_full_jp |> dplyr::count(journal, name = "n_pubs")
+
+unique_journals_jp <- pub_full_jp |>
+  dplyr::arrange(journal) |>
+  dplyr::distinct(journal, .keep_all = TRUE) |>
+  dplyr::left_join(pub_counts_jp, by = "journal") |>
+  dplyr::mutate(
+    journal       = dplyr::coalesce(journal, "*(not retrieved)*"),
+    issn_str      = dplyr::coalesce(issn_str, "—"),
+    guideline_lnk = dplyr::case_when(
+      !is.na(guideline_url) & nchar(guideline_url) > 0 ~
+        paste0('<a href="', guideline_url, '" target="_blank">link</a>'),
+      TRUE ~ "—"
+    ),
+    data_citation_ch = dplyr::if_else(matched, as.character(data_citation), "—"),
+    data_transp_ch   = dplyr::if_else(matched, as.character(data_transp),   "—"),
+    total_score_ch   = dplyr::if_else(matched, as.character(total_score),   "—")
+  )
+
+tbl_journals_display <- unique_journals_jp |>
+  dplyr::select(journal, issn_str, n_pubs, guideline_lnk,
+                data_citation_ch, data_transp_ch, total_score_ch, matched)
+
+tbl_journals_display |>
+  dplyr::select(-matched) |>
+  dplyr::rename(
+    `Journal`       = journal,
+    `ISSN(s)`       = issn_str,
+    `N pubs`        = n_pubs,
+    `Guidelines`    = guideline_lnk,
+    `Data Citation` = data_citation_ch,
+    `Data Transp.`  = data_transp_ch,
+    `TOP Total`     = total_score_ch
+  ) |>
+  knitr::kable(format = "html", escape = FALSE) |>
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    font_size = 12, full_width = TRUE
+  ) |>
+  kableExtra::add_header_above(c(" " = 4, "TOP Factor scores" = 3)) |>
+  kableExtra::column_spec(1, width = "32%") |>
+  kableExtra::row_spec(which(!tbl_journals_display$matched), background = "#f0f0f0")
+```
+
+### Table S7 — Data Transparency score distribution
+
+```{r}
+#| label: tbl-jp-score-dist
+#| tbl-cap: "Distribution of TOP Factor Data Transparency scores across unique matched journals."
+
+unique_journals_jp |>
+  dplyr::filter(matched) |>
+  dplyr::count(data_transp, name = "n_journals") |>
+  dplyr::arrange(data_transp) |>
+  dplyr::mutate(
+    pct    = paste0(round(100 * n_journals / sum(n_journals), 1), "%"),
+    policy = dplyr::case_when(
+      data_transp == 0 ~ "No mention of data sharing",
+      data_transp == 1 ~ "Disclosure required",
+      data_transp == 2 ~ "Data sharing required (exceptions permitted)",
+      data_transp == 3 ~ "Data sharing required + independent verification",
+      TRUE             ~ "Unknown"
+    )
+  ) |>
+  dplyr::rename(
+    `Score`  = data_transp,
+    `N`      = n_journals,
+    `%`      = pct,
+    `Policy` = policy
+  ) |>
+  knitr::kable() |>
+  kableExtra::kable_styling(full_width = FALSE)
+```
+
+### Figure S1 — Data Transparency score per journal
+
+```{r}
+#| label: fig-jp-journal-scores
+#| fig-cap: "TOP Factor Data Transparency score for each unique journal matched to the TOP database. Number in parentheses = publications from that journal in this study."
+#| fig-height: 8
+#| fig-width: 8
+
+score_pal_jp <- c("0" = "#d73027", "1" = "#fdae61", "2" = "#74add1", "3" = "#313695")
+
+plot_data_jp <- unique_journals_jp |>
+  dplyr::filter(matched) |>
+  dplyr::mutate(
+    score_f     = factor(data_transp, levels = 0:3),
+    journal_lab = paste0(journal, " (", n_pubs, ")")
+  ) |>
+  dplyr::arrange(data_transp, journal) |>
+  dplyr::mutate(journal_lab = factor(journal_lab, levels = journal_lab))
+
+ggplot2::ggplot(plot_data_jp,
+  ggplot2::aes(x = data_transp, y = journal_lab, colour = score_f)) +
+  ggplot2::geom_vline(xintercept = 0:3, colour = "grey90", linewidth = 0.3) +
+  ggplot2::geom_point(size = 4.5) +
+  ggplot2::scale_x_continuous(breaks = 0:3, limits = c(-0.3, 3.4)) +
+  ggplot2::scale_colour_manual(
+    values = score_pal_jp,
+    labels = c("0: No mention", "1: Disclosure req.", "2: Sharing req.", "3: Sharing + verified"),
+    name   = "Data Transparency"
+  ) +
+  ggplot2::labs(x = "TOP Factor Data Transparency score", y = NULL) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(
+    legend.position    = "top",
+    panel.grid.major.y = ggplot2::element_line(colour = "grey95"),
+    panel.grid.major.x = ggplot2::element_blank(),
+    axis.text.y        = ggplot2::element_text(size = 10)
+  )
+```
+
+### LDP vs. Comparator journal policies
+
+A potential confound is that LDP and Comparator authors may have submitted to journals with systematically different data sharing requirements. The following tables and figures compare TOP Factor Data Transparency scores for LDP and Comparator publication journals within each matched pair.
+
+```{r}
+#| label: jp-group-setup
+
+line_pal_jp <- c("LDP stricter"        = "#0072B2",
+                 "Comparator stricter" = "#E69F00",
+                 "Equal"               = "grey60")
+
+pub_grouped_jp <- pub_full_jp |>
+  dplyr::left_join(key |> dplyr::select(pub_id, pair_id, group), by = "pub_id")
+
+pair_wide_jp <- pub_grouped_jp |>
+  dplyr::select(pair_id, group, journal, data_transp, data_citation, total_score, matched) |>
+  tidyr::pivot_wider(
+    id_cols     = pair_id,
+    names_from  = group,
+    values_from = c(journal, data_transp, data_citation, total_score, matched),
+    names_glue  = "{group}_{.value}"
+  ) |>
+  dplyr::mutate(
+    both_matched = !is.na(LDP_data_transp) & !is.na(Comparator_data_transp),
+    transp_diff  = LDP_data_transp - Comparator_data_transp
+  ) |>
+  dplyr::arrange(pair_id)
+
+n_complete_pairs_jp <- sum(pair_wide_jp$both_matched, na.rm = TRUE)
+```
+
+Of the 19 matched pairs, **`r n_complete_pairs_jp`** have Data Transparency scores available for both journals and are used in the paired comparisons below. Pairs where one or both journals are unmatched are excluded from the paired analysis but shown in Table S9.
+
+### Table S8 — LDP vs. Comparator journal Data Transparency scores
+
+```{r}
+#| label: tbl-jp-group-summary
+#| tbl-cap: "Distribution of TOP Factor Data Transparency scores for LDP vs. Comparator publication journals (matched journals only)."
+
+pub_grouped_jp |>
+  dplyr::filter(matched) |>
+  dplyr::count(group, data_transp, name = "n") |>
+  dplyr::group_by(group) |>
+  dplyr::mutate(pct = paste0(round(100 * n / sum(n), 0), "%")) |>
+  dplyr::ungroup() |>
+  tidyr::pivot_wider(
+    id_cols     = data_transp,
+    names_from  = group,
+    values_from = c(n, pct),
+    names_glue  = "{group}_{.value}",
+    values_fill = list(n = 0L, pct = "0%")
+  ) |>
+  dplyr::arrange(data_transp) |>
+  dplyr::mutate(policy = dplyr::case_when(
+    data_transp == 0 ~ "No mention",
+    data_transp == 1 ~ "Disclosure required",
+    data_transp == 2 ~ "Sharing required",
+    data_transp == 3 ~ "Sharing + verification",
+    TRUE             ~ "Unknown"
+  )) |>
+  dplyr::select(data_transp, policy, LDP_n, LDP_pct, Comparator_n, Comparator_pct) |>
+  dplyr::rename(
+    `Score`   = data_transp, `Policy`  = policy,
+    `LDP n`   = LDP_n,      `LDP %`   = LDP_pct,
+    `Comp. n` = Comparator_n, `Comp. %` = Comparator_pct
+  ) |>
+  knitr::kable() |>
+  kableExtra::kable_styling(full_width = FALSE) |>
+  kableExtra::add_header_above(c(" " = 2, "LDP" = 2, "Comparator" = 2))
+```
+
+```{r}
+#| label: jp-group-means
+
+grp_means_jp <- pub_grouped_jp |>
+  dplyr::filter(matched) |>
+  dplyr::group_by(group) |>
+  dplyr::summarise(
+    mean_dt = round(mean(data_transp, na.rm = TRUE), 2),
+    sd_dt   = round(sd(data_transp,   na.rm = TRUE), 2),
+    .groups = "drop"
+  )
+
+ldp_mean_jp  <- grp_means_jp |> dplyr::filter(group == "LDP")        |> dplyr::pull(mean_dt)
+comp_mean_jp <- grp_means_jp |> dplyr::filter(group == "Comparator") |> dplyr::pull(mean_dt)
+```
+
+Among matched publications, mean Data Transparency score was **`r ldp_mean_jp`** (SD = `r grp_means_jp |> dplyr::filter(group == "LDP") |> dplyr::pull(sd_dt)`) for LDP journals and **`r comp_mean_jp`** (SD = `r grp_means_jp |> dplyr::filter(group == "Comparator") |> dplyr::pull(sd_dt)`) for Comparator journals.
+
+### Table S9 — Paired journal policy comparison
+
+```{r}
+#| label: tbl-jp-paired-policies
+#| tbl-cap: "Paired comparison of TOP Factor Data Transparency scores for LDP and Comparator journals within each matched pair. D = LDP score − Comparator score. Positive D: LDP journal stricter; negative D: Comparator journal stricter. Rows shaded grey have one or both journals unmatched."
+
+tbl9_jp <- pair_wide_jp |>
+  dplyr::mutate(
+    LDP_journal        = dplyr::coalesce(LDP_journal,        "*(unmatched)*"),
+    Comparator_journal = dplyr::coalesce(Comparator_journal, "*(unmatched)*"),
+    LDP_score_ch  = dplyr::if_else(LDP_matched,        as.character(LDP_data_transp),        "—"),
+    Comp_score_ch = dplyr::if_else(Comparator_matched, as.character(Comparator_data_transp), "—"),
+    D_ch          = dplyr::if_else(both_matched,        as.character(transp_diff),            "—")
+  ) |>
+  dplyr::select(pair_id, LDP_journal, LDP_score_ch,
+                Comparator_journal, Comp_score_ch, D_ch, both_matched)
+
+tbl9_jp |>
+  dplyr::select(-both_matched) |>
+  dplyr::rename(
+    `Pair`          = pair_id,
+    `LDP journal`   = LDP_journal,    `LDP score`   = LDP_score_ch,
+    `Comp. journal` = Comparator_journal, `Comp. score` = Comp_score_ch,
+    `D`             = D_ch
+  ) |>
+  knitr::kable() |>
+  kableExtra::kable_styling(
+    bootstrap_options = c("striped", "hover", "condensed"),
+    font_size = 12, full_width = TRUE
+  ) |>
+  kableExtra::add_header_above(c(" " = 1, "LDP" = 2, "Comparator" = 2, " " = 1)) |>
+  kableExtra::column_spec(2, width = "28%") |>
+  kableExtra::column_spec(4, width = "28%") |>
+  kableExtra::row_spec(which(!tbl9_jp$both_matched), background = "#f0f0f0")
+```
+
+### Figure S2 — Paired journal transparency scores
+
+```{r}
+#| label: fig-jp-paired-policies
+#| fig-cap: "Paired comparison of TOP Factor Data Transparency scores for LDP and Comparator journals within each matched pair. Each line connects one matched pair. Line colour: blue = LDP journal stricter; orange = Comparator journal stricter; grey = equal. Only pairs where both journals are matched are shown."
+#| fig-height: 5
+#| fig-width: 6
+
+paired_long_jp <- pair_wide_jp |>
+  dplyr::filter(both_matched) |>
+  dplyr::select(pair_id, transp_diff, LDP_data_transp, Comparator_data_transp) |>
+  tidyr::pivot_longer(
+    cols      = c(LDP_data_transp, Comparator_data_transp),
+    names_to  = "group", values_to = "data_transp"
+  ) |>
+  dplyr::mutate(
+    group    = stringr::str_remove(group, "_data_transp"),
+    group    = factor(group, levels = c("LDP", "Comparator")),
+    line_col = dplyr::case_when(
+      transp_diff > 0  ~ "LDP stricter",
+      transp_diff < 0  ~ "Comparator stricter",
+      transp_diff == 0 ~ "Equal"
+    ),
+    line_col = factor(line_col, levels = c("LDP stricter", "Comparator stricter", "Equal"))
+  )
+
+set.seed(42)
+ggplot2::ggplot(paired_long_jp,
+  ggplot2::aes(x = group, y = data_transp, group = pair_id, colour = line_col)) +
+  ggplot2::geom_line(linewidth = 0.8, alpha = 0.8,
+                     position = ggplot2::position_jitter(width = 0, height = 0.06, seed = 42)) +
+  ggplot2::geom_point(size = 3, alpha = 0.9,
+                      position = ggplot2::position_jitter(width = 0, height = 0.06, seed = 42)) +
+  ggplot2::scale_colour_manual(values = line_pal_jp, name = NULL) +
+  ggplot2::scale_y_continuous(
+    breaks = 0:3,
+    labels = c("0\n(none)", "1\n(disclosure)", "2\n(required)", "3\n(verified)"),
+    limits = c(-0.25, 3.25)
+  ) +
+  ggplot2::labs(x = NULL, y = "TOP Factor Data Transparency score") +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "top", panel.grid.minor = ggplot2::element_blank())
+```
+
+```{r}
+#| label: jp-interpret
+
+n_ldp_higher_jp  <- sum(pair_wide_jp$transp_diff[pair_wide_jp$both_matched] > 0,  na.rm = TRUE)
+n_comp_higher_jp <- sum(pair_wide_jp$transp_diff[pair_wide_jp$both_matched] < 0,  na.rm = TRUE)
+n_equal_jp       <- sum(pair_wide_jp$transp_diff[pair_wide_jp$both_matched] == 0, na.rm = TRUE)
+mean_diff_jp     <- round(mean(pair_wide_jp$transp_diff[pair_wide_jp$both_matched], na.rm = TRUE), 2)
+```
+
+Among the `r n_complete_pairs_jp` pairs with complete data: in **`r n_ldp_higher_jp`** pairs the LDP journal had a higher Data Transparency score; in **`r n_comp_higher_jp`** the Comparator journal scored higher; and in **`r n_equal_jp`** the scores were equal. The mean paired difference (LDP − Comparator) was **`r mean_diff_jp`**. A mean difference near zero indicates that journal-level data requirements are unlikely to confound the main FAIR-compliance findings.
+
+### Sensitivity: zero-imputed scores for unmatched journals
+
+Journals absent from the TOP database are conservatively assigned a score of 0, allowing all 19 pairs to contribute to the comparison.
+
+```{r}
+#| label: jp-impute-setup
+
+pub_imputed_jp <- pub_grouped_jp |>
+  dplyr::mutate(
+    data_transp_imp = dplyr::if_else(is.na(data_transp), 0L, data_transp),
+    imputed         = is.na(data_transp)
+  )
+
+pair_wide_imp_jp <- pub_imputed_jp |>
+  dplyr::select(pair_id, group, journal, data_transp_imp, imputed) |>
+  tidyr::pivot_wider(
+    id_cols     = pair_id,
+    names_from  = group,
+    values_from = c(journal, data_transp_imp, imputed),
+    names_glue  = "{group}_{.value}"
+  ) |>
+  dplyr::mutate(transp_diff_imp = LDP_data_transp_imp - Comparator_data_transp_imp) |>
+  dplyr::arrange(pair_id)
+
+n_imp_ldp_higher_jp  <- sum(pair_wide_imp_jp$transp_diff_imp > 0)
+n_imp_comp_higher_jp <- sum(pair_wide_imp_jp$transp_diff_imp < 0)
+n_imp_equal_jp       <- sum(pair_wide_imp_jp$transp_diff_imp == 0)
+mean_diff_imp_jp     <- round(mean(pair_wide_imp_jp$transp_diff_imp), 2)
+```
+
+With imputed scores, all `r nrow(pair_wide_imp_jp)` pairs are included. In **`r n_imp_ldp_higher_jp`** pairs the LDP journal scored higher; in **`r n_imp_comp_higher_jp`** the Comparator journal scored higher; and in **`r n_imp_equal_jp`** the scores were equal. Mean paired difference (LDP − Comparator): **`r mean_diff_imp_jp`**.
+
+### Figure S3 — Paired journal transparency scores (zero-imputed)
+
+```{r}
+#| label: fig-jp-paired-imp
+#| fig-cap: "Paired comparison of TOP Factor Data Transparency scores using zero-imputed values for unmatched journals (open triangles). Filled circles = matched journals. Line colours as in Figure S2."
+#| fig-height: 5
+#| fig-width: 6
+
+paired_long_imp_jp <- pair_wide_imp_jp |>
+  dplyr::select(pair_id, transp_diff_imp,
+                LDP_data_transp_imp, Comparator_data_transp_imp,
+                LDP_imputed, Comparator_imputed) |>
+  tidyr::pivot_longer(
+    cols      = c(LDP_data_transp_imp, Comparator_data_transp_imp),
+    names_to  = "group", values_to = "data_transp"
+  ) |>
+  dplyr::mutate(
+    group    = stringr::str_remove(group, "_data_transp_imp"),
+    group    = factor(group, levels = c("LDP", "Comparator")),
+    imputed  = dplyr::if_else(group == "LDP", LDP_imputed, Comparator_imputed),
+    line_col = dplyr::case_when(
+      transp_diff_imp > 0  ~ "LDP stricter",
+      transp_diff_imp < 0  ~ "Comparator stricter",
+      transp_diff_imp == 0 ~ "Equal"
+    ),
+    line_col = factor(line_col, levels = c("LDP stricter", "Comparator stricter", "Equal"))
+  )
+
+set.seed(42)
+jitter_pos_jp <- ggplot2::position_jitter(width = 0, height = 0.06, seed = 42)
+
+ggplot2::ggplot(paired_long_imp_jp,
+  ggplot2::aes(x = group, y = data_transp, group = pair_id, colour = line_col)) +
+  ggplot2::geom_line(linewidth = 0.8, alpha = 0.8, position = jitter_pos_jp) +
+  ggplot2::geom_point(
+    data = dplyr::filter(paired_long_imp_jp, !imputed),
+    size = 3, shape = 16, alpha = 0.9, position = jitter_pos_jp) +
+  ggplot2::geom_point(
+    data = dplyr::filter(paired_long_imp_jp, imputed),
+    size = 3, shape = 2, stroke = 1.2, alpha = 0.9, position = jitter_pos_jp) +
+  ggplot2::scale_colour_manual(values = line_pal_jp, name = NULL) +
+  ggplot2::scale_y_continuous(
+    breaks = 0:3,
+    labels = c("0\n(none)", "1\n(disclosure)", "2\n(required)", "3\n(verified)"),
+    limits = c(-0.25, 3.25)
+  ) +
+  ggplot2::labs(x = NULL, y = "TOP Factor Data Transparency score",
+                caption = "Filled circles = matched journals; open triangles = imputed (score = 0)") +
+  ggplot2::theme_bw() +
+  ggplot2::theme(
+    legend.position  = "top",
+    panel.grid.minor = ggplot2::element_blank(),
+    plot.caption     = ggplot2::element_text(size = 9, colour = "grey40")
+  )
+```
+
+### FAIR compliance scores by journal data sharing policy
+
+This section examines whether FAIR compliance scores vary with journal policy stringency, separately for LDP and Comparator groups. If journals with stricter policies produce higher FAIR scores regardless of LDP training, that would suggest journal requirements — rather than training — are driving compliance differences. Imputed scores (0 for unmatched journals) are used so all 38 publications are included; publications from journals with a score of 3 are excluded due to insufficient sample size.
+
+```{r}
+#| label: jp-fair-by-top-setup
+
+fair_top_jp <- pub_imputed_jp |>
+  dplyr::select(pub_id, group, data_transp_imp, imputed) |>
+  dplyr::left_join(scores_mean |> dplyr::rename(mean_fair = mean_score), by = "pub_id") |>
+  dplyr::filter(data_transp_imp %in% 0:2) |>
+  dplyr::mutate(
+    top_f = factor(data_transp_imp,
+                   levels = 0:2,
+                   labels = c("0\n(no policy)", "1\n(disclosure)", "2\n(required)"),
+                   ordered = TRUE),
+    group = factor(group, levels = c("LDP", "Comparator"))
+  )
+
+fair_top_summary_jp <- fair_top_jp |>
+  dplyr::group_by(group, top_f) |>
+  dplyr::summarise(
+    n         = dplyr::n(),
+    se_fair   = sd(mean_fair,  na.rm = TRUE) / sqrt(dplyr::n()),
+    mean_fair = mean(mean_fair, na.rm = TRUE),
+    .groups   = "drop"
+  )
+```
+
+### Figure S4 — FAIR compliance by journal data sharing policy
+
+```{r}
+#| label: fig-jp-fair-by-top
+#| fig-cap: "Mean FAIR compliance scores for LDP and Comparator publications grouped by TOP Factor Data Transparency score of the journal (zero-imputed for unmatched journals; score 3 excluded). Jittered points = individual publications (filled circles = matched journals; open triangles = imputed). Solid squares = group means; error bars = ±1 SE."
+#| fig-height: 5
+#| fig-width: 6.5
+
+cb_cols_jp <- c(LDP = "#0072B2", Comparator = "#E69F00")
+dodge_w_jp <- 0.65
+
+ggplot2::ggplot() +
+  ggplot2::geom_point(
+    data = dplyr::filter(fair_top_jp, !imputed),
+    ggplot2::aes(x = top_f, y = mean_fair, colour = group),
+    position = ggplot2::position_jitterdodge(jitter.width = 0.15, dodge.width = dodge_w_jp),
+    shape = 16, size = 2, alpha = 0.8
+  ) +
+  ggplot2::geom_point(
+    data = dplyr::filter(fair_top_jp, imputed),
+    ggplot2::aes(x = top_f, y = mean_fair, colour = group),
+    position = ggplot2::position_jitterdodge(jitter.width = 0.15, dodge.width = dodge_w_jp),
+    shape = 2, size = 2, stroke = 1.1, alpha = 0.8
+  ) +
+  ggplot2::geom_errorbar(
+    data = fair_top_summary_jp,
+    ggplot2::aes(x = top_f, group = group,
+                 ymin = mean_fair - se_fair, ymax = mean_fair + se_fair),
+    position = ggplot2::position_dodge(dodge_w_jp),
+    width = 0.18, linewidth = 0.6, colour = "grey30"
+  ) +
+  ggplot2::geom_point(
+    data = fair_top_summary_jp,
+    ggplot2::aes(x = top_f, y = mean_fair, colour = group),
+    position = ggplot2::position_dodge(dodge_w_jp),
+    shape = 15, size = 4
+  ) +
+  ggplot2::geom_text(
+    data = fair_top_summary_jp,
+    ggplot2::aes(x = top_f, y = Inf, colour = group, label = paste0("n = ", n)),
+    position = ggplot2::position_dodge(dodge_w_jp),
+    vjust = -0.4, size = 3.2, show.legend = FALSE
+  ) +
+  ggplot2::scale_colour_manual(values = cb_cols_jp) +
+  ggplot2::scale_y_continuous(
+    limits = c(NA, 4.2),
+    expand = ggplot2::expansion(mult = 0, add = c(0.08, 0))
+  ) +
+  ggplot2::coord_cartesian(clip = "off") +
+  ggplot2::labs(
+    x       = "TOP Factor Data Transparency score",
+    y       = "Mean FAIR compliance score (0–4)",
+    colour  = NULL,
+    caption = "Filled circles = matched journals; open triangles = imputed (score = 0); solid squares = group means"
+  ) +
+  ggplot2::theme_bw() +
+  ggplot2::theme(
+    legend.position  = "top",
+    panel.grid.minor = ggplot2::element_blank(),
+    plot.caption     = ggplot2::element_text(size = 9, colour = "grey40"),
+    plot.margin      = ggplot2::margin(t = 22, r = 5, b = 5, l = 5)
+  )
+```

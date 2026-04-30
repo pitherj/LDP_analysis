@@ -14,7 +14,7 @@ The full analysis plan is described in the [pre-registration on OSF](https://osf
 
 The FAIR compliance checklist is available [here](https://github.com/pitherj/LDP_pre-registration/blob/main/FAIR-compliance-checklist.md).
 
-**NOTE**: minor deviations from the pre-registration include (i) eliminating 3 pairs of papers because they were found to be ineligible (hence N = 19 pairs instead of 21); and (ii) using the permutation test rather than paired t-test as the primary method for the main analysis (but the latter is also reported).   
+**NOTE**: minor deviations from the pre-registration include (i) eliminating 2 pairs of papers because they were found to be ineligible (hence N = 19 pairs instead of 21); and (ii) using the permutation test rather than paired t-test as the primary method for the main analysis (but the latter is also reported).   
 
 ---
 
@@ -71,10 +71,14 @@ Key packages (all locked in `renv.lock`):
 | `here` | Portable file paths |
 | `DiagrammeR` | PRISMA-style record-flow diagram (Graphviz) |
 | `DiagrammeRsvg`, `rsvg` | SVG / PDF export of the flow diagram |
+| `jsonlite` | CrossRef REST API queries (journal metadata) |
+| `stringr` | String manipulation (journal policy analysis) |
 
 ### Data
 
 The four rater evaluation CSV files must be placed in `data/data_raw/` (see [Project Structure](#project-structure) below). The private pairing key (`rater_key_final_v2.csv`) must be placed in `data/data_raw/data_private/`. This folder is git-ignored; contact the project lead to obtain it.
+
+The unplanned exploratory analyses (journal data sharing policies) also require `data/data_raw/top-factor.csv` — a TOP Factor database snapshot manually downloaded from [topfactor.org](https://topfactor.org/). The CrossRef API cache (`data/data_processed/crossref_journal_cache.rds`) is generated automatically on the first render and does not need to be supplied.
 
 ---
 
@@ -83,17 +87,20 @@ The four rater evaluation CSV files must be placed in `data/data_raw/` (see [Pro
 ```
 LDP_analysis/
 ├── data/
-│   ├── data_raw/               # Raw rater evaluation files (one per rater)
+│   ├── data_raw/               # Raw input files
 │   │   ├── data_private/       # Git-ignored; contains identifiable pairing key
 │   │   ├── rater_publications_final_JP.csv
 │   │   ├── rater_publications_final_v2_DH.csv
 │   │   ├── rater_publications_final_v2_JR_scored.csv
-│   │   └── rater_publications_full-SE.csv
+│   │   ├── rater_publications_full-SE.csv
+│   │   └── top-factor.csv      # TOP Factor database snapshot (manually downloaded)
 │   └── data_processed/         # Derived files written by full_workflow.qmd
-│       ├── pairs_lookup.csv    # Non-sensitive pairing lookup (pub_id, pair_id, group)
-│       └── rater_scores_wide.csv  # FAIR scores in wide format (one row per publication)
+│       ├── pairs_lookup.csv            # Non-sensitive pairing lookup (pub_id, pair_id, group)
+│       ├── rater_scores_wide.csv       # FAIR scores in wide format (one row per publication)
+│       ├── pairs_data.csv              # One row per matched pair with paired differences
+│       └── crossref_journal_cache.rds  # CrossRef API cache (auto-generated on first render)
 ├── scripts/
-│   ├── full_workflow.qmd       # Main Quarto document: PRISMA diagram + full analysis pipeline
+│   ├── full_workflow.qmd       # Main Quarto document: full analysis pipeline
 │   ├── full_workflow.html      # Rendered analysis report (self-contained)
 │   ├── prisma_flow.qmd         # Standalone PRISMA-style record-flow diagram
 │   ├── prisma_flow.html        # Rendered standalone diagram (self-contained)
@@ -116,10 +123,12 @@ All analysis is contained in `scripts/full_workflow.qmd`. The document is struct
 3. **Import rater data** — reads all four rater CSVs; confirms 38 publications are common to all four raters.
 4. **Reformat to wide** — aligns per-rater scores into a single wide tibble (`scores_wide`); writes `rater_scores_wide.csv`.
 5. **Inter-rater reliability** — ICC (two-way mixed, absolute agreement, average of *k* = 4 raters); Krippendorff's α (interval scale); percent agreement.
-6. **Primary analysis** — computes mean FAIR score per publication, joins pairing lookup, calculates paired differences (*D* = LDP − Comparator), runs a one-sided permutation test (seed = 20260329, *n* = 1000).
-7. **Secondary analysis** — one-sided paired *t*-test; Cohen's *d* via `effectsize`.
-8. **Visualisation** — paired plot (one line per matched pair).
-9. **Post-hoc sensitivity analysis** — assessment of rater influence on results.
+6. **Primary analysis** — computes mean FAIR score per publication, joins pairing lookup, calculates paired differences (*D* = LDP − Comparator), visualises paired data; runs a one-sided permutation test (seed = 20260329, *n* = 1000) as the primary test and a one-sided paired *t*-test with Cohen's *d* as the secondary.
+7. **Planned sensitivity analysis** — repeated random pairing robustness check: repeats the primary paired *t*-test across 100 random within-institution pairings to assess sensitivity of the variance estimate to arbitrary pairing choices.
+8. **Pre-planned exploratory analyses** — FAIR component breakdown (per-letter scores and Reusable sub-components); institution-level subgroup analysis (UBC and McGill); FAIR score and paired-difference distribution visualisations.
+9. **Sensitivity analysis: leave-one-rater-out** — ICC and permutation test repeated excluding each rater in turn; composite influence metric reported.
+10. **Variability assumptions: assumed vs. observed** — post-hoc comparison of the σ~D~ range assumed in the pre-registered power analysis against the values observed in the data.
+11. **Unplanned exploratory analyses** — journal data sharing policies: CrossRef metadata retrieval, TOP Factor matching, LDP vs. Comparator journal policy comparison, sensitivity analysis with zero-imputed scores for unmatched journals, and FAIR compliance by journal policy tier.
 
 A standalone version of the PRISMA diagram (with extended documentation of data sources and filtering layer descriptions) is available in `scripts/prisma_flow.qmd`. Rendering that file also exports `prisma_flow.svg` and `prisma_flow.pdf` for use in manuscripts.
 
@@ -141,6 +150,8 @@ quarto render scripts/full_workflow.qmd
 | `prisma_flow.pdf` | `scripts/` | PDF export of the PRISMA diagram |
 | `pairs_lookup.csv` | `data/data_processed/` | Non-sensitive pairing key |
 | `rater_scores_wide.csv` | `data/data_processed/` | Wide-format FAIR scores (38 publications × 4 raters) |
+| `pairs_data.csv` | `data/data_processed/` | One row per matched pair: pair_id, LDP mean score, Comparator mean score, paired difference D |
+| `crossref_journal_cache.rds` | `data/data_processed/` | CrossRef API cache of journal metadata for all 38 DOIs (auto-generated on first render) |
 
 ---
 

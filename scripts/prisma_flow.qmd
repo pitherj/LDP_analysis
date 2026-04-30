@@ -55,9 +55,10 @@ Titles matching word-boundary patterns for non-primary content (`review`, `persp
 #| label: prisma-diagram
 #| fig-cap: >
 #|   PRISMA-style flow of LDP and comparator publications from OpenAlex retrieval
-#|   to the final 19-pair rater set. Blue boxes = LDP track; green boxes = comparator
-#|   track; yellow boxes = matching / post-hoc correction steps; red boxes = excluded
-#|   or removed records; amber box = replaced (not excluded) records.
+#|   to the final 19-pair rater set. Light blue boxes = LDP track; light green boxes =
+#|   comparator track; dark green box = final output; light yellow boxes = matching /
+#|   post-hoc correction steps; red boxes = excluded or removed records; amber box =
+#|   replaced (not excluded) records.
 
 library(DiagrammeR)
 
